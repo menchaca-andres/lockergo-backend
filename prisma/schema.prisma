@@ -201,7 +201,7 @@ model Command {
 model RefreshToken {
   id_rt     Int       @id @default(autoincrement())
   userId    Int
-  tokenHash String
+  tokenHash String   @unique
   expiresAt DateTime
   revokedAt DateTime?
   user      User      @relation(fields: [userId], references: [id_user], onDelete: Cascade)
