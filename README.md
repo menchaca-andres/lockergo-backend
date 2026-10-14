@@ -1,6 +1,6 @@
 # LockerGo Backend
 
-API de LockerGo con Node.js, Express, TypeScript, Prisma y PostgreSQL. Bun se usa para instalar dependencias y ejecutar los scripts del proyecto.
+API de LockerGo con Node.js, Express, TypeScript, Prisma ORM 7 y PostgreSQL. Bun se usa para instalar dependencias y ejecutar los scripts del proyecto. Prisma obtiene la URL de conexión desde `prisma.config.ts` y conecta al PostgreSQL mediante su driver adapter.
 
 ## Requisitos
 

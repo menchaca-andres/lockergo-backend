@@ -1,10 +1,10 @@
 generator client {
-  provider = "prisma-client-js"
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
 }
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
 enum Role {
@@ -45,7 +45,7 @@ enum CommandStatus {
 }
 
 model User {
-  id           Int      @id @default(autoincrement())
+  id_user      Int      @id @default(autoincrement())
   name         String
   email        String   @unique
   passwordHash String
@@ -60,7 +60,7 @@ model User {
 }
 
 model Locker {
-  id        Int      @id @default(autoincrement())
+  id_locker Int      @id @default(autoincrement())
   code      String   @unique
   name      String
   location  String?
@@ -74,19 +74,19 @@ model Locker {
 }
 
 model LockerAssignment {
-  id       Int       @id @default(autoincrement())
-  userId   Int
-  lockerId Int
-  startsAt DateTime  @default(now())
-  endsAt   DateTime?
-  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  locker   Locker    @relation(fields: [lockerId], references: [id], onDelete: Cascade)
+  id_assignment Int       @id @default(autoincrement())
+  userId        Int
+  lockerId      Int
+  startsAt      DateTime  @default(now())
+  endsAt        DateTime?
+  user          User      @relation(fields: [userId], references: [id_user], onDelete: Cascade)
+  locker        Locker    @relation(fields: [lockerId], references: [id_locker], onDelete: Cascade)
 
   @@unique([userId, lockerId])
 }
 
 model Device {
-  id              Int       @id @default(autoincrement())
+  id_device       Int       @id @default(autoincrement())
   code            String    @unique
   lockerId        Int
   boardModel      String    @default("ESP32-38pin")
@@ -97,12 +97,12 @@ model Device {
   isActive        Boolean   @default(true)
   createdAt       DateTime  @default(now())
 
-  locker     Locker      @relation(fields: [lockerId], references: [id])
+  locker     Locker      @relation(fields: [lockerId], references: [id_locker])
   components Component[]
 }
 
 model ComponentType {
-  id         Int               @id @default(autoincrement())
+  id_ct      Int               @id @default(autoincrement())
   code       String            @unique
   name       String
   category   ComponentCategory
@@ -113,7 +113,7 @@ model ComponentType {
 }
 
 model ComponentModel {
-  id            Int     @id @default(autoincrement())
+  id_cm         Int     @id @default(autoincrement())
   typeId        Int
   code          String  @unique
   name          String
@@ -122,23 +122,23 @@ model ComponentModel {
   defaultConfig Json?
   isActive      Boolean @default(true)
 
-  type       ComponentType @relation(fields: [typeId], references: [id])
+  type       ComponentType @relation(fields: [typeId], references: [id_ct])
   components Component[]
 }
 
 model Component {
-  id          Int       @id @default(autoincrement())
-  deviceId    Int
-  modelId     Int
-  key         String
-  name        String
-  config      Json
-  calibration Json?
-  isEnabled   Boolean   @default(true)
-  installedAt  DateTime  @default(now())
+  id_component Int      @id @default(autoincrement())
+  deviceId     Int
+  modelId      Int
+  key          String
+  name         String
+  config       Json
+  calibration  Json?
+  isEnabled    Boolean  @default(true)
+  installedAt  DateTime @default(now())
 
-  device   Device         @relation(fields: [deviceId], references: [id], onDelete: Cascade)
-  model    ComponentModel @relation(fields: [modelId], references: [id])
+  device   Device         @relation(fields: [deviceId], references: [id_device], onDelete: Cascade)
+  model    ComponentModel @relation(fields: [modelId], references: [id_cm])
   readings Reading[]
   events   Event[]
   commands Command[]
@@ -147,7 +147,7 @@ model Component {
 }
 
 model Reading {
-  id          BigInt   @id @default(autoincrement())
+  id_reading  BigInt   @id @default(autoincrement())
   componentId Int
   lockerId    Int
   valueNum    Float?
@@ -158,8 +158,8 @@ model Reading {
   recordedAt  DateTime
   receivedAt  DateTime @default(now())
 
-  component Component @relation(fields: [componentId], references: [id], onDelete: Cascade)
-  locker    Locker    @relation(fields: [lockerId], references: [id])
+  component Component @relation(fields: [componentId], references: [id_component], onDelete: Cascade)
+  locker    Locker    @relation(fields: [lockerId], references: [id_locker])
   events    Event[]
 
   @@index([componentId, recordedAt(sort: Desc)])
@@ -167,26 +167,26 @@ model Reading {
 }
 
 model Event {
-  id             BigInt    @id @default(autoincrement())
+  id_event       BigInt    @id @default(autoincrement())
   lockerId       Int
   componentId    Int?
   readingId      BigInt?
   type           String
   severity       Severity  @default(INFO)
   detail         Json?
-  acknowledgedAt  DateTime?
+  acknowledgedAt DateTime?
   createdAt      DateTime  @default(now())
 
-  locker    Locker     @relation(fields: [lockerId], references: [id])
-  component Component? @relation(fields: [componentId], references: [id], onDelete: SetNull)
-  reading   Reading?    @relation(fields: [readingId], references: [id], onDelete: SetNull)
+  locker    Locker     @relation(fields: [lockerId], references: [id_locker])
+  component Component? @relation(fields: [componentId], references: [id_component], onDelete: SetNull)
+  reading   Reading?   @relation(fields: [readingId], references: [id_reading], onDelete: SetNull)
 
   @@index([lockerId, createdAt(sort: Desc)])
   @@index([type])
 }
 
 model Command {
-  id          Int           @id @default(autoincrement())
+  id_command  Int           @id @default(autoincrement())
   componentId Int
   action      String
   params      Json?
@@ -195,25 +195,25 @@ model Command {
   createdAt   DateTime      @default(now())
   executedAt  DateTime?
 
-  component Component @relation(fields: [componentId], references: [id], onDelete: Cascade)
+  component Component @relation(fields: [componentId], references: [id_component], onDelete: Cascade)
 }
 
 model RefreshToken {
-  id        Int       @id @default(autoincrement())
+  id_rt     Int       @id @default(autoincrement())
   userId    Int
   tokenHash String
   expiresAt DateTime
   revokedAt DateTime?
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id_user], onDelete: Cascade)
 }
 
 model AuditLog {
-  id        Int      @id @default(autoincrement())
+  id_al     Int      @id @default(autoincrement())
   userId    Int?
   action    String
   entity    String
   entityId  String?
   meta      Json?
   createdAt DateTime @default(now())
-  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user      User?    @relation(fields: [userId], references: [id_user], onDelete: SetNull)
 }
