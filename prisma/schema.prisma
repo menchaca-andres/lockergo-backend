@@ -1,0 +1,219 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  USER
+}
+
+enum ComponentCategory {
+  SENSOR
+  ACTUATOR
+  DISPLAY
+}
+
+enum ValueKind {
+  NUMBER
+  BOOLEAN
+  STRING
+  JSON
+}
+
+enum Quality {
+  OK
+  OUT_OF_RANGE
+  ERROR
+}
+
+enum Severity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum CommandStatus {
+  PENDING
+  SENT
+  DONE
+  FAILED
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         Role     @default(USER)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  assignments   LockerAssignment[]
+  refreshTokens RefreshToken[]
+  auditLogs     AuditLog[]
+}
+
+model Locker {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique
+  name      String
+  location  String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  assignments LockerAssignment[]
+  devices     Device[]
+  readings    Reading[]
+  events      Event[]
+}
+
+model LockerAssignment {
+  id       Int       @id @default(autoincrement())
+  userId   Int
+  lockerId Int
+  startsAt DateTime  @default(now())
+  endsAt   DateTime?
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  locker   Locker    @relation(fields: [lockerId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, lockerId])
+}
+
+model Device {
+  id              Int       @id @default(autoincrement())
+  code            String    @unique
+  lockerId        Int
+  boardModel      String    @default("ESP32-38pin")
+  apiKeyHash      String
+  firmwareVersion String?
+  configVersion   Int       @default(1)
+  lastSeenAt      DateTime?
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+
+  locker     Locker      @relation(fields: [lockerId], references: [id])
+  components Component[]
+}
+
+model ComponentType {
+  id         Int               @id @default(autoincrement())
+  code       String            @unique
+  name       String
+  category   ComponentCategory
+  valueKind  ValueKind
+  unit       String?
+  eventRules Json?
+  models     ComponentModel[]
+}
+
+model ComponentModel {
+  id            Int     @id @default(autoincrement())
+  typeId        Int
+  code          String  @unique
+  name          String
+  manufacturer  String?
+  driver        String
+  defaultConfig Json?
+  isActive      Boolean @default(true)
+
+  type       ComponentType @relation(fields: [typeId], references: [id])
+  components Component[]
+}
+
+model Component {
+  id          Int       @id @default(autoincrement())
+  deviceId    Int
+  modelId     Int
+  key         String
+  name        String
+  config      Json
+  calibration Json?
+  isEnabled   Boolean   @default(true)
+  installedAt  DateTime  @default(now())
+
+  device   Device         @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  model    ComponentModel @relation(fields: [modelId], references: [id])
+  readings Reading[]
+  events   Event[]
+  commands Command[]
+
+  @@unique([deviceId, key])
+}
+
+model Reading {
+  id          BigInt   @id @default(autoincrement())
+  componentId Int
+  lockerId    Int
+  valueNum    Float?
+  valueBool   Boolean?
+  valueText   String?
+  payload     Json?
+  quality     Quality  @default(OK)
+  recordedAt  DateTime
+  receivedAt  DateTime @default(now())
+
+  component Component @relation(fields: [componentId], references: [id], onDelete: Cascade)
+  locker    Locker    @relation(fields: [lockerId], references: [id])
+  events    Event[]
+
+  @@index([componentId, recordedAt(sort: Desc)])
+  @@index([lockerId, recordedAt(sort: Desc)])
+}
+
+model Event {
+  id             BigInt    @id @default(autoincrement())
+  lockerId       Int
+  componentId    Int?
+  readingId      BigInt?
+  type           String
+  severity       Severity  @default(INFO)
+  detail         Json?
+  acknowledgedAt  DateTime?
+  createdAt      DateTime  @default(now())
+
+  locker    Locker     @relation(fields: [lockerId], references: [id])
+  component Component? @relation(fields: [componentId], references: [id], onDelete: SetNull)
+  reading   Reading?    @relation(fields: [readingId], references: [id], onDelete: SetNull)
+
+  @@index([lockerId, createdAt(sort: Desc)])
+  @@index([type])
+}
+
+model Command {
+  id          Int           @id @default(autoincrement())
+  componentId Int
+  action      String
+  params      Json?
+  status      CommandStatus @default(PENDING)
+  requestedBy Int?
+  createdAt   DateTime      @default(now())
+  executedAt  DateTime?
+
+  component Component @relation(fields: [componentId], references: [id], onDelete: Cascade)
+}
+
+model RefreshToken {
+  id        Int       @id @default(autoincrement())
+  userId    Int
+  tokenHash String
+  expiresAt DateTime
+  revokedAt DateTime?
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int?
+  action    String
+  entity    String
+  entityId  String?
+  meta      Json?
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+}
