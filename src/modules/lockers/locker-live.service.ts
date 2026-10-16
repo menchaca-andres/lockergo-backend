@@ -189,6 +189,9 @@ export async function listLockerEvents(
   const events = await prisma.event.findMany({
     where: {
       lockerId,
+      ...(user.role === 'CLIENTE'
+        ? { OR: [{ packageId: null }, { package: { clientId: user.id_user } }] }
+        : {}),
       ...(filters.type ? { type: filters.type } : {}),
       ...(filters.severity ? { severity: filters.severity } : {}),
       ...(filters.from || filters.to
@@ -210,7 +213,8 @@ export async function listLockerEvents(
       createdAt: true,
       acknowledgedAt: true,
       component: { select: { key: true, name: true } },
-      reading: { select: { id_reading: true, recordedAt: true } }
+      reading: { select: { id_reading: true, recordedAt: true } },
+      package: { select: { id_package: true, code: true, status: true } }
     }
   });
 

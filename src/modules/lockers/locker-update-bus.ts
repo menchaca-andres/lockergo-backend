@@ -1,3 +1,5 @@
+import type { Role } from '../../generated/prisma/client';
+
 export interface LockerUpdate {
   reading: {
     id_reading: string;
@@ -17,7 +19,28 @@ export interface LockerUpdate {
     severity: string;
     detail: unknown;
     createdAt: string;
+    packageAudience?: { clientId: number; depositorId: number };
   }>;
+}
+
+export function filterLockerUpdateForUser(
+  update: LockerUpdate,
+  user: { id_user: number; role: Role }
+): LockerUpdate {
+  return {
+    ...update,
+    events: update.events.flatMap((event) => {
+      const { packageAudience, ...visibleEvent } = event;
+      if (
+        packageAudience &&
+        user.role !== 'ADMIN' &&
+        (user.role !== 'CLIENTE' || packageAudience.clientId !== user.id_user)
+      ) {
+        return [];
+      }
+      return [visibleEvent];
+    })
+  };
 }
 
 interface SequencedUpdate {

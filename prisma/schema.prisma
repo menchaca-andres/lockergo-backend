@@ -9,7 +9,19 @@ datasource db {
 
 enum Role {
   ADMIN
-  USER
+  CLIENTE
+  DEPOSITANTE
+}
+
+enum PackageStatus {
+  PENDING
+  PICKED_UP
+}
+
+enum PackageSize {
+  S
+  M
+  L
 }
 
 enum ComponentCategory {
@@ -49,14 +61,16 @@ model User {
   name         String
   email        String   @unique
   passwordHash String
-  role         Role     @default(USER)
+  role         Role     @default(CLIENTE)
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  assignments   LockerAssignment[]
-  refreshTokens RefreshToken[]
-  auditLogs     AuditLog[]
+  assignments       LockerAssignment[]
+  refreshTokens     RefreshToken[]
+  auditLogs         AuditLog[]
+  depositedPackages Package[]          @relation("PackageDepositor")
+  receivedPackages  Package[]          @relation("PackageClient")
 }
 
 model Locker {
@@ -71,6 +85,7 @@ model Locker {
   devices     Device[]
   readings    Reading[]
   events      Event[]
+  packages    Package[]
 }
 
 model LockerAssignment {
@@ -169,6 +184,7 @@ model Reading {
 model Event {
   id_event       BigInt    @id @default(autoincrement())
   lockerId       Int
+  packageId      Int?
   componentId    Int?
   readingId      BigInt?
   type           String
@@ -178,11 +194,35 @@ model Event {
   createdAt      DateTime  @default(now())
 
   locker    Locker     @relation(fields: [lockerId], references: [id_locker])
+  package   Package?   @relation(fields: [packageId], references: [id_package], onDelete: SetNull)
   component Component? @relation(fields: [componentId], references: [id_component], onDelete: SetNull)
   reading   Reading?   @relation(fields: [readingId], references: [id_reading], onDelete: SetNull)
 
   @@index([lockerId, createdAt(sort: Desc)])
+  @@index([packageId])
   @@index([type])
+}
+
+model Package {
+  id_package    Int           @id @default(autoincrement())
+  code          String        @unique
+  lockerId      Int
+  depositorId   Int
+  clientId      Int
+  status        PackageStatus @default(PENDING)
+  estimatedSize PackageSize?
+  depositedAt   DateTime?
+  pickedUpAt    DateTime?
+  createdAt     DateTime      @default(now())
+
+  locker    Locker @relation(fields: [lockerId], references: [id_locker], onDelete: Restrict)
+  depositor User   @relation("PackageDepositor", fields: [depositorId], references: [id_user], onDelete: Restrict)
+  client    User   @relation("PackageClient", fields: [clientId], references: [id_user], onDelete: Restrict)
+  events    Event[]
+
+  @@index([lockerId, status, depositedAt(sort: Desc)])
+  @@index([depositorId, status, depositedAt(sort: Desc)])
+  @@index([clientId, status, depositedAt(sort: Desc)])
 }
 
 model Command {

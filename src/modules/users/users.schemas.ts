@@ -14,7 +14,7 @@ export const createUserSchema = z.object({
   name: userName,
   email,
   password,
-  role: z.enum(['ADMIN', 'USER']).default('USER')
+  role: z.enum(['ADMIN', 'CLIENTE', 'DEPOSITANTE']).default('CLIENTE')
 });
 
 export const updateUserSchema = z
@@ -22,7 +22,7 @@ export const updateUserSchema = z
     name: userName.optional(),
     email: email.optional(),
     password: password.optional(),
-    role: z.enum(['ADMIN', 'USER']).optional(),
+    role: z.enum(['ADMIN', 'CLIENTE', 'DEPOSITANTE']).optional(),
     isActive: z.boolean().optional()
   })
   .refine((input) => Object.keys(input).length > 0, 'At least one field must be provided');

@@ -82,6 +82,7 @@ try {
 
   process.env.DATABASE_URL = testUrl.toString();
   process.env.NODE_ENV = 'test';
+  process.env.ALLOW_UNAUTHENTICATED_DEVICE_ACCESS = 'false';
   process.env.JWT_SECRET = randomUUID() + randomUUID();
   process.env.JWT_REFRESH_SECRET = randomUUID() + randomUUID();
   process.env.CORS_ORIGIN = 'http://127.0.0.1:4200';
@@ -139,13 +140,26 @@ try {
       name: 'Phase Two Test User',
       email: `phase2-${randomUUID()}@example.test`,
       password: 'LockerGo-test-user-2026!',
-      role: 'USER'
+      role: 'CLIENTE'
     }
   });
   assert.equal(newUser.response.status, 201, 'Admin can create a user');
   const user = newUser.data['user'] as Record<string, unknown>;
   const userId = user['id_user'] as number;
   assert.ok(!('passwordHash' in user));
+
+  const newDepositor = await request('/api/users', {
+    method: 'POST',
+    token: adminToken as string,
+    body: {
+      name: 'Phase Two Test Depositor',
+      email: `depositor-${randomUUID()}@example.test`,
+      password: 'LockerGo-test-depositor-2026!',
+      role: 'DEPOSITANTE'
+    }
+  });
+  assert.equal(newDepositor.response.status, 201, 'Admin can create a depositor');
+  const depositorId = (newDepositor.data['user'] as Record<string, unknown>)['id_user'] as number;
 
   const createLocker = async (suffix: string) => {
     const result = await request('/api/lockers', {
@@ -159,6 +173,7 @@ try {
   const assignedLocker = await createLocker('assigned');
   const unassignedLocker = await createLocker('private');
   const assignedLockerId = assignedLocker['id_locker'] as number;
+  const packageCode = `phase2-package-${randomUUID()}`;
 
   const assignment = await request(`/api/users/${userId}/lockers`, {
     method: 'PUT',
@@ -173,6 +188,58 @@ try {
   });
   assert.equal(userLogin.response.status, 200, 'Created user can log in');
   const userToken = userLogin.data['accessToken'] as string;
+  const depositorLogin = await request('/api/auth/login', {
+    method: 'POST',
+    body: { email: (newDepositor.data['user'] as Record<string, unknown>)['email'], password: 'LockerGo-test-depositor-2026!' }
+  });
+  assert.equal(depositorLogin.response.status, 200, 'Created depositor can log in');
+  const depositorToken = depositorLogin.data['accessToken'] as string;
+  const lockerOptions = await request('/api/packages/locker-options', { token: depositorToken });
+  assert.equal(lockerOptions.response.status, 200, 'DEPOSITANTE can choose an active locker for registration');
+  assert.ok(
+    (lockerOptions.data['lockers'] as Array<Record<string, unknown>>)
+      .some((locker) => locker['id_locker'] === assignedLockerId)
+  );
+  assert.equal(
+    (await request('/api/packages/locker-options', { token: userToken })).response.status,
+    403,
+    'CLIENTE cannot browse package locker options'
+  );
+  assert.equal(
+    (await request('/api/packages', { method: 'POST', token: userToken, body: {
+      code: packageCode, lockerId: assignedLockerId, clientEmail: user['email']
+    } })).response.status,
+    403,
+    'CLIENTE cannot pre-register packages'
+  );
+  const createPackage = await request('/api/packages', {
+    method: 'POST',
+    token: depositorToken,
+    body: { code: packageCode, lockerId: assignedLockerId, clientEmail: user['email'] }
+  });
+  assert.equal(createPackage.response.status, 201, 'DEPOSITANTE can pre-register a package');
+  const preregisteredPackage = (createPackage.data['package'] as Record<string, unknown>);
+  assert.equal(preregisteredPackage['status'], 'PENDING');
+  assert.equal(preregisteredPackage['depositedAt'], null);
+  assert.equal(
+    (await request('/api/packages', { token: userToken })).response.status,
+    200,
+    'CLIENTE can list own package records'
+  );
+  const depositorPackages = await request('/api/packages', { token: depositorToken });
+  assert.equal(depositorPackages.response.status, 200);
+  assert.equal(
+    (depositorPackages.data['packages'] as Array<Record<string, unknown>>)[0]?.['code'],
+    packageCode,
+    'DEPOSITANTE sees only package records it created'
+  );
+  const adminPackages = await request('/api/packages', { token: adminToken as string });
+  assert.equal(adminPackages.response.status, 200, 'ADMIN can list all packages');
+  assert.equal(
+    (await request('/api/dashboard/admin/overview', { token: userToken })).response.status,
+    403,
+    'CLIENTE cannot access global admin analytics'
+  );
 
   const userLockers = await request('/api/lockers', { token: userToken });
   assert.equal(userLockers.response.status, 200);
@@ -216,6 +283,12 @@ try {
   const distanceModel = (distanceType['models'] as Array<Record<string, unknown>>)
     .find((model) => model['code'] === 'hc-sr04');
   assert.ok(distanceModel, 'Seed includes the HC-SR04 model');
+  const proximityType = (catalogResult.data['types'] as Array<Record<string, unknown>>)
+    .find((type) => type['code'] === 'proximity');
+  assert.ok(proximityType, 'Seed includes the proximity component type');
+  const proximityModel = (proximityType['models'] as Array<Record<string, unknown>>)
+    .find((model) => model['code'] === 'fc-51');
+  assert.ok(proximityModel, 'Seed includes the FC-51 model');
 
   const createDevice = await request('/api/devices', {
     method: 'POST',
@@ -254,15 +327,28 @@ try {
       modelId: distanceModel['id_cm'],
       key: 'distance-1',
       name: 'Ultrasonic distance',
-      config: { triggerPin: 25, echoPin: 19, intervalMs: 1000 }
+      config: { triggerPin: 25, echoPin: 19, intervalMs: 1000 },
+      calibration: { emptyDistanceCm: 20 }
     }
   });
   assert.equal(addDistanceComponent.response.status, 201, 'Admin can configure the HC-SR04 component');
   const distanceComponent = addDistanceComponent.data['component'] as Record<string, unknown>;
+  const addProximityComponent = await request(`/api/devices/${deviceId}/components`, {
+    method: 'POST',
+    token: adminToken as string,
+    body: {
+      modelId: proximityModel['id_cm'],
+      key: 'proximity-1',
+      name: 'Package presence',
+      config: { signalPin: 27 }
+    }
+  });
+  assert.equal(addProximityComponent.response.status, 201, 'Admin can configure the FC-51 component');
+  const proximityComponent = addProximityComponent.data['component'] as Record<string, unknown>;
 
   const deviceConfig = await request(`/api/devices/${device['code']}/config`, { apiKey: apiKey as string });
   assert.equal(deviceConfig.response.status, 200);
-  assert.equal(deviceConfig.data['configVersion'], 3, 'Adding components increments configVersion');
+  assert.equal(deviceConfig.data['configVersion'], 4, 'Adding components increments configVersion');
   const configComponent = (deviceConfig.data['components'] as Array<Record<string, unknown>>)[0];
   assert.deepEqual(configComponent['config'], {
     signalPin: 32,
@@ -280,6 +366,7 @@ try {
       readings: [
         { component: 'door-1', value: true, ts: nowSeconds },
         { component: 'door-1', value: false, ts: nowSeconds + 1 },
+        { component: 'proximity-1', value: false, ts: nowSeconds + 1 },
         { component: 'missing-component', value: true },
         { component: 'door-1', value: 'not-a-boolean' },
         { component: 'distance-1', value: null, quality: 'ERROR' }
@@ -288,7 +375,7 @@ try {
   });
   assert.equal(ingest.response.status, 202);
   assert.deepEqual(ingest.data, {
-    accepted: 3,
+    accepted: 4,
     rejected: [
       { component: 'missing-component', reason: 'Unknown or disabled component' },
       { component: 'door-1', reason: 'Value does not match BOOLEAN' }
@@ -321,6 +408,95 @@ try {
     'A null reading marked ERROR persists and creates a sensor-error event'
   );
 
+  const packageDeposit = await request('/api/ingest/v1/readings', {
+    method: 'POST',
+    apiKey: apiKey as string,
+    body: {
+      deviceCode: device['code'],
+      readings: [
+        { component: 'distance-1', value: 14, ts: nowSeconds + 3 },
+        { component: 'proximity-1', value: true, ts: nowSeconds + 3 },
+        { component: 'door-1', value: true, ts: nowSeconds + 3 }
+      ]
+    }
+  });
+  assert.equal(packageDeposit.response.status, 202);
+  const depositedPackage = await prisma.package.findUnique({
+    where: { code: packageCode },
+    select: { status: true, depositedAt: true, pickedUpAt: true, estimatedSize: true }
+  });
+  assert.equal(depositedPackage?.status, 'PENDING');
+  assert.ok(depositedPackage?.depositedAt instanceof Date);
+  assert.equal(depositedPackage?.pickedUpAt, null);
+  assert.equal(depositedPackage?.estimatedSize, 'S', 'A 6 cm estimated package height is size S');
+  const depositEvents = await prisma.event.findMany({
+    where: { package: { code: packageCode } },
+    select: { type: true, packageId: true }
+  });
+  assert.deepEqual(depositEvents.map(({ type }) => type), ['PACKAGE_DEPOSITED']);
+
+  const packagePickup = await request('/api/ingest/v1/readings', {
+    method: 'POST',
+    apiKey: apiKey as string,
+    body: {
+      deviceCode: device['code'],
+      readings: [
+        { component: 'door-1', value: false, ts: nowSeconds + 4 },
+        { component: 'proximity-1', value: false, ts: nowSeconds + 5 },
+        { component: 'door-1', value: true, ts: nowSeconds + 5 }
+      ]
+    }
+  });
+  assert.equal(packagePickup.response.status, 202);
+  const pickedUpPackage = await prisma.package.findUnique({
+    where: { code: packageCode },
+    select: { status: true, depositedAt: true, pickedUpAt: true }
+  });
+  assert.equal(pickedUpPackage?.status, 'PICKED_UP');
+  assert.ok(pickedUpPackage?.depositedAt instanceof Date);
+  assert.ok(pickedUpPackage?.pickedUpAt instanceof Date);
+  const clientPackages = await request('/api/packages', { token: userToken });
+  assert.ok(
+    (clientPackages.data['packages'] as Array<Record<string, unknown>>)
+      .some((item) => item['code'] === packageCode),
+    'CLIENTE sees its own package after pickup'
+  );
+  const dashboardOverview = await request('/api/dashboard/admin/overview', {
+    token: adminToken as string
+  });
+  assert.equal(dashboardOverview.response.status, 200);
+  assert.equal(
+    typeof (dashboardOverview.data['kpis'] as Record<string, unknown>)['doorOpeningsToday'],
+    'number',
+    'Global admin dashboard returns door activity KPIs'
+  );
+  assert.ok(
+    (dashboardOverview.data['packagesByStatus'] as Array<Record<string, unknown>>)
+      .some((item) => item['status'] === 'PICKED_UP' && item['count'] === 1),
+    'Global admin dashboard aggregates package counts by status'
+  );
+  const lockerAnalytics = await request(`/api/lockers/${assignedLockerId}/analytics`, {
+    token: adminToken as string
+  });
+  assert.equal(lockerAnalytics.response.status, 200);
+  assert.ok(
+    (lockerAnalytics.data['packageSizeDistribution'] as Array<Record<string, unknown>>)
+      .some((item) => item['size'] === 'S' && item['count'] === 1),
+    'Locker analytics aggregates package sizes'
+  );
+  assert.equal(
+    (await request(`/api/lockers/${assignedLockerId}/analytics`, { token: userToken })).response.status,
+    403,
+    'CLIENTE cannot access admin locker analytics'
+  );
+  await assert.rejects(
+    prisma.package.update({
+      where: { code: packageCode },
+      data: { status: 'PENDING' }
+    }),
+    'Picked-up packages must retain a pickup timestamp'
+  );
+
   const overview = await request('/api/lockers/overview', { token: userToken });
   assert.equal(overview.response.status, 200);
   assert.deepEqual(
@@ -338,20 +514,23 @@ try {
   const stateComponents = stateDevices[0]?.['components'] as Array<Record<string, unknown>>;
   const latestReading = stateComponents[0]?.['latestReading'] as Record<string, unknown>;
   assert.equal(typeof latestReading['id_reading'], 'string', 'BigInt reading IDs are JSON-safe strings');
-  assert.equal(latestReading['valueBool'], false);
+  assert.equal(latestReading['valueBool'], true, 'Locker state reflects the most recent live door reading');
 
   const history = await request(`/api/lockers/${assignedLockerId}/readings?limit=10`, { token: userToken });
   assert.equal(history.response.status, 200);
-  assert.equal((history.data['readings'] as Array<Record<string, unknown>>).length, 3);
+  assert.equal((history.data['readings'] as Array<Record<string, unknown>>).length, 10);
   const distanceHistory = await request(
     `/api/lockers/${assignedLockerId}/readings?componentId=${distanceComponent['id_component']}`,
     { token: userToken }
   );
   assert.equal(distanceHistory.response.status, 200);
-  const failedDistanceReading = (distanceHistory.data['readings'] as Array<Record<string, unknown>>)[0];
-  assert.equal(failedDistanceReading?.['valueNum'], null);
-  assert.equal(failedDistanceReading?.['quality'], 'ERROR');
-  const eventHistory = await request(`/api/lockers/${assignedLockerId}/events?severity=INFO`, { token: userToken });
+  const latestDistanceReading = (distanceHistory.data['readings'] as Array<Record<string, unknown>>)[0];
+  assert.equal(latestDistanceReading?.['valueNum'], 14);
+  assert.equal(latestDistanceReading?.['quality'], 'OK');
+  const eventHistory = await request(
+    `/api/lockers/${assignedLockerId}/events?type=DOOR_OPENED&severity=INFO`,
+    { token: userToken }
+  );
   assert.equal(eventHistory.response.status, 200);
   assert.equal((eventHistory.data['events'] as Array<Record<string, unknown>>)[0]?.['type'], 'DOOR_OPENED');
   const sensorErrorHistory = await request(
@@ -373,9 +552,10 @@ try {
     'Stream ticket cannot be reused for another locker'
   );
 
+  const streamAbortController = new AbortController();
   const streamResponse = await fetch(
     `${baseUrl}/api/lockers/${assignedLockerId}/stream?ticket=${encodeURIComponent(streamTicket)}`,
-    { headers: { accept: 'text/event-stream' } }
+    { headers: { accept: 'text/event-stream' }, signal: streamAbortController.signal }
   );
   assert.equal(streamResponse.status, 200);
   if (!streamResponse.body) throw new Error('SSE response has no readable stream');
@@ -402,6 +582,42 @@ try {
     assert.ok(received.includes(expected), `SSE stream emits ${expected}`);
     return received;
   }
+  assert.equal(
+    (await request('/api/packages/stream-ticket', {
+      method: 'POST',
+      token: adminToken as string
+    })).response.status,
+    403,
+    'ADMIN uses the admin locker streams, not the personal package stream'
+  );
+  const packageStreamTicketResult = await request('/api/packages/stream-ticket', {
+    method: 'POST',
+    token: depositorToken
+  });
+  assert.equal(packageStreamTicketResult.response.status, 200);
+  const packageStreamAbort = new AbortController();
+  const packageStreamResponse = await fetch(
+    `${baseUrl}/api/packages/stream?ticket=${encodeURIComponent(packageStreamTicketResult.data['ticket'] as string)}&lastEventId=1`,
+    { headers: { accept: 'text/event-stream' }, signal: packageStreamAbort.signal }
+  );
+  assert.equal(packageStreamResponse.status, 200, 'DEPOSITANTE can subscribe to its package stream');
+  if (!packageStreamResponse.body) throw new Error('Package SSE response has no readable stream');
+  const packageStreamReader = packageStreamResponse.body.getReader();
+  const packageDecoder = new TextDecoder();
+  let packageUpdateText = '';
+  const packageDeadline = Date.now() + 5000;
+  while (!packageUpdateText.includes('event: package.update') && Date.now() < packageDeadline) {
+    const chunk = await packageStreamReader.read();
+    if (chunk.done) break;
+    packageUpdateText += packageDecoder.decode(chunk.value, { stream: true });
+  }
+  assert.ok(packageUpdateText.includes('event: package.update'), 'Package stream replays package changes');
+  assert.ok(packageUpdateText.includes(`"code":"${packageCode}"`), 'DEPOSITANTE receives its package code');
+  assert.ok(packageUpdateText.includes('"status":"PICKED_UP"'), 'Package stream carries the latest package status');
+  packageStreamAbort.abort();
+  await packageStreamReader.cancel();
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
   await readUntil('event: ready');
   const liveIngest = await request('/api/ingest/v1/readings', {
     method: 'POST',
@@ -414,7 +630,9 @@ try {
   assert.equal(liveIngest.response.status, 202);
   const liveUpdate = await readUntil('event: locker.update');
   assert.ok(liveUpdate.includes('"valueBool":true'), 'SSE update carries the ingested reading');
+  streamAbortController.abort();
   await streamReader.cancel();
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   const storedDevice = await prisma.device.findUnique({
     where: { id_device: deviceId },
@@ -441,15 +659,14 @@ try {
     'Rotated device key grants access'
   );
 
-  console.info('Phase 2 and live locker API verification passed: auth/RBAC, assignment-scoped state/history/events, SSE, ingestion, and key rotation.');
+  console.info('Phase 2/3 verification passed: package lifecycle, role-filtered access, analytics, SSE, ingestion, and key rotation.');
 
-  await new Promise<void>((resolve, reject) => {
-    server?.close((error) => error ? reject(error) : resolve());
-  });
+  server.closeAllConnections();
   server = undefined;
 } finally {
   if (server) {
-    await new Promise<void>((resolve) => server?.close(() => resolve()));
+    server.closeAllConnections();
+    server = undefined;
   }
   await disconnectDatabase?.();
   if (databaseCreated) {

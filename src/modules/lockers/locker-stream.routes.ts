@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import { getActiveUser } from '../auth/auth.service';
 import { getLocker } from './lockers.service';
 import { lockerIdSchema } from './lockers.schemas';
-import { subscribeToLockerUpdates } from './locker-update-bus';
+import { filterLockerUpdateForUser, subscribeToLockerUpdates } from './locker-update-bus';
 import { createLockerStreamTicket, verifyLockerStreamTicket } from './stream-tickets';
 
 function sendEvent(response: Response, id: number, type: string, data: unknown): void {
@@ -76,13 +76,13 @@ export async function streamLockerUpdates(req: Request, res: Response): Promise<
   res.write('retry: 3000\n\n');
 
   const subscription = subscribeToLockerUpdates(lockerId, lastEventId, (event) => {
-    sendEvent(res, event.id, 'locker.update', event.update);
+    sendEvent(res, event.id, 'locker.update', filterLockerUpdateForUser(event.update, user));
   });
   if (subscription.historyGap) {
     res.write('event: reset\ndata: {}\n\n');
   } else {
     for (const event of subscription.replay) {
-      sendEvent(res, event.id, 'locker.update', event.update);
+      sendEvent(res, event.id, 'locker.update', filterLockerUpdateForUser(event.update, user));
     }
   }
   res.write('event: ready\ndata: {}\n\n');
@@ -108,6 +108,8 @@ export async function streamLockerUpdates(req: Request, res: Response): Promise<
     })();
   }, 20_000);
   const ticketTimeout = setTimeout(() => res.end(), ticketData.expiresAt - Date.now());
+  heartbeat.unref();
+  ticketTimeout.unref();
   res.on('close', () => {
     clearInterval(heartbeat);
     clearTimeout(ticketTimeout);

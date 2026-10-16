@@ -30,6 +30,13 @@ export const lockerEventsQuerySchema = z.object({
   path: ['to']
 });
 
+export const lockerAnalyticsQuerySchema = z.object({
+  ...queryFilters
+}).refine(({ from, to }) => !from || !to || from <= to, {
+  message: 'from must be earlier than or equal to to',
+  path: ['to']
+});
+
 export const createLockerSchema = z.object({
   code,
   name,

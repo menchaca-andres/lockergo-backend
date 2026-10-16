@@ -12,12 +12,25 @@ const lockerSelect = {
 } as const;
 
 export async function listLockers(user: PublicUser) {
+  if (user.role === 'DEPOSITANTE') return [];
+
   return prisma.locker.findMany({
     where: user.role === 'ADMIN'
       ? undefined
       : {
           isActive: true,
-          assignments: { some: { userId: user.id_user, endsAt: null } }
+          OR: [
+            { assignments: { some: { userId: user.id_user, endsAt: null } } },
+            {
+              packages: {
+                some: {
+                  clientId: user.id_user,
+                  status: 'PENDING',
+                  depositedAt: { not: null }
+                }
+              }
+            }
+          ]
         },
     select: lockerSelect,
     orderBy: { id_locker: 'asc' }
@@ -25,6 +38,8 @@ export async function listLockers(user: PublicUser) {
 }
 
 export async function getLocker(user: PublicUser, id: number) {
+  if (user.role === 'DEPOSITANTE') return null;
+
   return prisma.locker.findFirst({
     where: {
       id_locker: id,
@@ -32,7 +47,18 @@ export async function getLocker(user: PublicUser, id: number) {
         ? {}
         : {
             isActive: true,
-            assignments: { some: { userId: user.id_user, endsAt: null } }
+            OR: [
+              { assignments: { some: { userId: user.id_user, endsAt: null } } },
+              {
+                packages: {
+                  some: {
+                    clientId: user.id_user,
+                    status: 'PENDING',
+                    depositedAt: { not: null }
+                  }
+                }
+              }
+            ]
           })
     },
     select: lockerSelect

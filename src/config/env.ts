@@ -12,6 +12,7 @@ export const envSchema = z
     JWT_REFRESH_SECRET: z.string().min(8),
     CORS_ORIGIN: z.string().default('http://localhost:4200'),
     DEVICE_OFFLINE_SECONDS: z.coerce.number().default(120),
+    DOOR_OPEN_ALERT_SECONDS: z.coerce.number().int().positive().default(300),
     ALLOW_UNAUTHENTICATED_DEVICE_ACCESS: z.enum(['true', 'false']).default('false').transform((value) => value === 'true')
   })
   .superRefine((config, context) => {

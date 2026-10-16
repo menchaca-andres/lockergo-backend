@@ -6,7 +6,7 @@ import {
 } from './users.schemas';
 
 describe('user schemas', () => {
-  test('normalizes user identity and defaults new accounts to USER', () => {
+  test('normalizes user identity and defaults new accounts to CLIENTE', () => {
     expect(createUserSchema.parse({
       name: '  User One ',
       email: ' USER@Example.com ',
@@ -15,8 +15,20 @@ describe('user schemas', () => {
       name: 'User One',
       email: 'user@example.com',
       password: 'a-secure-password',
-      role: 'USER'
+      role: 'CLIENTE'
     });
+  });
+
+  test('accepts the supported account roles', () => {
+    const roles = ['ADMIN', 'CLIENTE', 'DEPOSITANTE'] as const;
+    for (const role of roles) {
+      expect(createUserSchema.parse({
+        name: 'User One',
+        email: 'user@example.com',
+        password: 'a-secure-password',
+        role
+      }).role).toBe(role);
+    }
   });
 
   test('rejects weak passwords and oversized bcrypt inputs', () => {

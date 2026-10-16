@@ -13,6 +13,8 @@ import { usersRouter } from './modules/users/users.routes';
 import { catalogRouter } from './modules/catalog/catalog.routes';
 import { componentsRouter, deviceConfigRouter, devicesRouter } from './modules/devices/devices.routes';
 import { ingestRouter } from './modules/ingest/ingest.routes';
+import { packagesRouter } from './modules/packages/packages.routes';
+import { dashboardRouter } from './modules/dashboard/dashboard.routes';
 
 export const app = express();
 
@@ -32,6 +34,8 @@ app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev', {
 app.use('/api/auth', authRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/lockers', lockersRouter);
+app.use('/api/packages', packagesRouter);
+app.use('/api/dashboard', dashboardRouter);
 app.use('/api/devices', deviceConfigRouter);
 app.use('/api/devices', devicesRouter);
 app.use('/api/components', componentsRouter);

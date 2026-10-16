@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { publishLockerUpdate, subscribeToLockerUpdates, type LockerUpdate } from './locker-update-bus';
+import {
+  filterLockerUpdateForUser,
+  publishLockerUpdate,
+  subscribeToLockerUpdates,
+  type LockerUpdate
+} from './locker-update-bus';
 
 const update: LockerUpdate = {
   reading: {
@@ -47,5 +52,42 @@ describe('locker update bus', () => {
     const expiredCursor = subscribeToLockerUpdates(73, 0);
     expect(expiredCursor.historyGap).toBe(true);
     expiredCursor.unsubscribe();
+  });
+
+  test('filters package events to the recipient and exposes all for ADMIN', () => {
+    const updateWithPackages: LockerUpdate = {
+      ...update,
+      events: [
+        {
+          id_event: '2',
+          type: 'PACKAGE_DEPOSITED',
+          severity: 'INFO',
+          detail: { packageCode: 'client-package' },
+          createdAt: '2026-10-15T12:00:01.000Z',
+          packageAudience: { clientId: 10, depositorId: 20 }
+        },
+        {
+          id_event: '3',
+          type: 'PACKAGE_PICKED_UP',
+          severity: 'INFO',
+          detail: { packageCode: 'other-package' },
+          createdAt: '2026-10-15T12:00:02.000Z',
+          packageAudience: { clientId: 11, depositorId: 21 }
+        }
+      ]
+    };
+
+    const clientUpdate = filterLockerUpdateForUser(updateWithPackages, {
+      id_user: 10,
+      role: 'CLIENTE'
+    });
+    expect(clientUpdate.events).toHaveLength(1);
+    expect(clientUpdate.events[0]?.detail).toEqual({ packageCode: 'client-package' });
+    expect(clientUpdate.events[0]).not.toHaveProperty('packageAudience');
+
+    expect(filterLockerUpdateForUser(updateWithPackages, {
+      id_user: 1,
+      role: 'ADMIN'
+    }).events).toHaveLength(2);
   });
 });

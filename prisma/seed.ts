@@ -4,7 +4,14 @@ import { prisma } from '../src/lib/prisma';
 
 const initialComponentTypes = [
   { code: 'distance', name: 'Distancia', category: 'SENSOR', valueKind: 'NUMBER', unit: 'cm' },
-  { code: 'proximity', name: 'Proximidad', category: 'SENSOR', valueKind: 'BOOLEAN', unit: null },
+  {
+    code: 'proximity',
+    name: 'Proximidad',
+    category: 'SENSOR',
+    valueKind: 'BOOLEAN',
+    unit: null,
+    eventRules: { onChange: { 'false->true': 'PACKET_DETECTED', 'true->false': 'PACKET_REMOVED' } }
+  },
   {
     code: 'door_contact',
     name: 'Contacto de puerta',
@@ -21,7 +28,7 @@ const initialComponentModels = [
     code: 'hc-sr04',
     name: 'HC-SR04',
     driver: 'hcsr04',
-    defaultConfig: { triggerPin: 25, echoPin: 26, intervalMs: 1000 }
+    defaultConfig: { triggerPin: 25, echoPin: 19, intervalMs: 1000 }
   },
   {
     typeCode: 'proximity',
@@ -92,6 +99,17 @@ async function seedCatalog(): Promise<void> {
 }
 
 async function seedAdmin(): Promise<void> {
+  if (!process.env['ADMIN_EMAIL']?.trim()) {
+    const existingAdmin = await prisma.user.findFirst({
+      where: { role: 'ADMIN' },
+      select: { id_user: true }
+    });
+    if (existingAdmin) {
+      console.info('Admin account already exists; no changes made.');
+      return;
+    }
+  }
+
   const { ADMIN_NAME, ADMIN_EMAIL, ADMIN_PASSWORD } = adminSchema.parse(process.env);
   const existing = await prisma.user.findUnique({
     where: { email: ADMIN_EMAIL },

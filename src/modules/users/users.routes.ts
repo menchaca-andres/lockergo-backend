@@ -37,7 +37,10 @@ usersRouter.patch('/:id', async (req, res) => {
   const { id } = userIdSchema.parse(req.params);
   const input = updateUserSchema.parse(req.body);
 
-  if (id === req.authUser?.id_user && (input.isActive === false || input.role === 'USER')) {
+  if (
+    id === req.authUser?.id_user &&
+    (input.isActive === false || (input.role !== undefined && input.role !== 'ADMIN'))
+  ) {
     res.status(400).json({ message: 'You cannot deactivate or demote your own account' });
     return;
   }
@@ -55,8 +58,8 @@ usersRouter.put('/:id/lockers', async (req, res) => {
     res.status(404).json({ message: 'User not found' });
     return;
   }
-  if (user.role !== 'USER') {
-    res.status(400).json({ message: 'Lockers can only be assigned to USER accounts' });
+  if (user.role !== 'CLIENTE') {
+    res.status(400).json({ message: 'Lockers can only be assigned to CLIENTE accounts' });
     return;
   }
 

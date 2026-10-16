@@ -4,6 +4,7 @@ import { requireRole } from '../auth/require-role.middleware';
 import {
   createLockerSchema,
   lockerEventsQuerySchema,
+  lockerAnalyticsQuerySchema,
   lockerHistoryQuerySchema,
   lockerIdSchema,
   updateLockerSchema
@@ -16,6 +17,7 @@ import {
 } from './locker-live.service';
 import { createStreamTicket, streamLockerUpdates } from './locker-stream.routes';
 import { createLocker, getLocker, listLockers, updateLocker } from './lockers.service';
+import { getLockerAnalytics } from './locker-analytics.service';
 
 export const lockersRouter = Router();
 lockersRouter.get('/:id/stream', streamLockerUpdates);
@@ -86,6 +88,17 @@ lockersRouter.get('/:id/events', async (req, res) => {
     return;
   }
   res.json({ events });
+});
+
+lockersRouter.get('/:id/analytics', requireRole('ADMIN'), async (req, res) => {
+  const { id } = lockerIdSchema.parse(req.params);
+  const filters = lockerAnalyticsQuerySchema.parse(req.query);
+  const analytics = await getLockerAnalytics(id, filters);
+  if (!analytics) {
+    res.status(404).json({ message: 'Locker not found' });
+    return;
+  }
+  res.json(analytics);
 });
 
 lockersRouter.get('/:id', async (req, res) => {
