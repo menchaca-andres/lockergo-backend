@@ -43,6 +43,11 @@ enum Quality {
   ERROR
 }
 
+enum ReadingPurpose {
+  PERIODIC
+  DOOR_CLOSE
+}
+
 enum Severity {
   INFO
   WARNING
@@ -81,11 +86,12 @@ model Locker {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
 
-  assignments LockerAssignment[]
-  devices     Device[]
-  readings    Reading[]
-  events      Event[]
-  packages    Package[]
+  assignments      LockerAssignment[]
+  devices          Device[]
+  readings         Reading[]
+  events           Event[]
+  packages         Package[]
+  hourlyAggregates ReadingHourlyAggregate[]
 }
 
 model LockerAssignment {
@@ -142,36 +148,44 @@ model ComponentModel {
 }
 
 model Component {
-  id_component Int      @id @default(autoincrement())
-  deviceId     Int
-  modelId      Int
-  key          String
-  name         String
-  config       Json
-  calibration  Json?
-  isEnabled    Boolean  @default(true)
-  installedAt  DateTime @default(now())
+  id_component            Int       @id @default(autoincrement())
+  deviceId                Int
+  modelId                 Int
+  key                     String
+  name                    String
+  config                  Json
+  calibration             Json?
+  isEnabled               Boolean   @default(true)
+  installedAt             DateTime  @default(now())
+  consecutiveErrorCount   Int       @default(0)
+  sensorErrorActive       Boolean   @default(false)
+  stableBooleanValue      Boolean?
+  pendingBooleanValue     Boolean?
+  pendingBooleanAt        DateTime?
+  pendingBooleanReadingId BigInt?
 
-  device   Device         @relation(fields: [deviceId], references: [id_device], onDelete: Cascade)
-  model    ComponentModel @relation(fields: [modelId], references: [id_cm])
-  readings Reading[]
-  events   Event[]
-  commands Command[]
+  device           Device                   @relation(fields: [deviceId], references: [id_device], onDelete: Cascade)
+  model            ComponentModel           @relation(fields: [modelId], references: [id_cm])
+  readings         Reading[]
+  events           Event[]
+  commands         Command[]
+  hourlyAggregates ReadingHourlyAggregate[]
 
   @@unique([deviceId, key])
 }
 
 model Reading {
-  id_reading  BigInt   @id @default(autoincrement())
+  id_reading  BigInt         @id @default(autoincrement())
   componentId Int
   lockerId    Int
   valueNum    Float?
   valueBool   Boolean?
   valueText   String?
   payload     Json?
-  quality     Quality  @default(OK)
+  quality     Quality        @default(OK)
+  purpose     ReadingPurpose @default(PERIODIC)
   recordedAt  DateTime
-  receivedAt  DateTime @default(now())
+  receivedAt  DateTime       @default(now())
 
   component Component @relation(fields: [componentId], references: [id_component], onDelete: Cascade)
   locker    Locker    @relation(fields: [lockerId], references: [id_locker])
@@ -179,6 +193,25 @@ model Reading {
 
   @@index([componentId, recordedAt(sort: Desc)])
   @@index([lockerId, recordedAt(sort: Desc)])
+}
+
+model ReadingHourlyAggregate {
+  id           Int      @id @default(autoincrement())
+  componentId  Int
+  lockerId     Int
+  hour         DateTime
+  minimum      Float?
+  maximum      Float?
+  average      Float?
+  count        BigInt
+  numericCount BigInt
+  aggregatedAt DateTime @default(now())
+
+  component Component @relation(fields: [componentId], references: [id_component], onDelete: Cascade)
+  locker    Locker    @relation(fields: [lockerId], references: [id_locker], onDelete: Cascade)
+
+  @@unique([componentId, hour])
+  @@index([lockerId, hour(sort: Desc)])
 }
 
 model Event {
@@ -215,9 +248,9 @@ model Package {
   pickedUpAt    DateTime?
   createdAt     DateTime      @default(now())
 
-  locker    Locker @relation(fields: [lockerId], references: [id_locker], onDelete: Restrict)
-  depositor User   @relation("PackageDepositor", fields: [depositorId], references: [id_user], onDelete: Restrict)
-  client    User   @relation("PackageClient", fields: [clientId], references: [id_user], onDelete: Restrict)
+  locker    Locker  @relation(fields: [lockerId], references: [id_locker], onDelete: Restrict)
+  depositor User    @relation("PackageDepositor", fields: [depositorId], references: [id_user], onDelete: Restrict)
+  client    User    @relation("PackageClient", fields: [clientId], references: [id_user], onDelete: Restrict)
   events    Event[]
 
   @@index([lockerId, status, depositedAt(sort: Desc)])
@@ -241,7 +274,7 @@ model Command {
 model RefreshToken {
   id_rt     Int       @id @default(autoincrement())
   userId    Int
-  tokenHash String   @unique
+  tokenHash String    @unique
   expiresAt DateTime
   revokedAt DateTime?
   user      User      @relation(fields: [userId], references: [id_user], onDelete: Cascade)

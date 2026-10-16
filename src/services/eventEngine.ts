@@ -15,6 +15,12 @@ export interface DerivedEvent {
   detail: Record<string, string | number | boolean | null>;
 }
 
+export interface SensorErrorState {
+  consecutiveErrors: number;
+  threshold: number;
+  active: boolean;
+}
+
 function currentValue(value: NormalizedReadingValue): string | number | boolean | null {
   if (value.valueNum !== null) return value.valueNum;
   if (value.valueBool !== null) return value.valueBool;
@@ -39,37 +45,56 @@ function transitionType(eventRules: unknown, from: boolean, to: boolean): string
   return typeof event === 'string' && /^[A-Z][A-Z0-9_]{1,79}$/.test(event) ? event : null;
 }
 
+export function deriveBooleanTransition(
+  eventRules: unknown,
+  from: boolean,
+  to: boolean
+): DerivedEvent | null {
+  const type = transitionType(eventRules, from, to);
+  return type
+    ? { type, severity: 'INFO', detail: { previousValue: from, value: to } }
+    : null;
+}
+
 export function deriveEvents(
   eventRules: unknown,
   previous: PreviousReadingState | null,
   value: NormalizedReadingValue,
-  quality: Quality
+  quality: Quality,
+  errorState: SensorErrorState = { consecutiveErrors: 0, threshold: 3, active: false }
 ): DerivedEvent[] {
   const events: DerivedEvent[] = [];
   const current = currentValue(value);
 
   if (previous && typeof current === 'boolean' && typeof previous.valueBool === 'boolean') {
-    const type = transitionType(eventRules, previous.valueBool, current);
-    if (type) {
-      events.push({
-        type,
-        severity: 'INFO',
-        detail: { previousValue: previous.valueBool, value: current }
-      });
-    }
+    const transition = deriveBooleanTransition(eventRules, previous.valueBool, current);
+    if (transition) events.push(transition);
   }
 
-  if (quality !== 'OK' && previous?.quality !== quality) {
+  if (
+    quality === 'ERROR' &&
+    errorState.consecutiveErrors >= errorState.threshold &&
+    !errorState.active
+  ) {
     events.push({
-      type: quality === 'ERROR' ? 'SENSOR_ERROR' : 'SENSOR_OUT_OF_RANGE',
-      severity: quality === 'ERROR' ? 'CRITICAL' : 'WARNING',
+      type: 'SENSOR_ERROR',
+      severity: 'WARNING',
+      detail: { quality, value: current, consecutiveErrors: errorState.consecutiveErrors }
+    });
+  } else if (quality === 'OUT_OF_RANGE' && previous?.quality !== 'OUT_OF_RANGE') {
+    events.push({
+      type: 'SENSOR_OUT_OF_RANGE',
+      severity: 'WARNING',
       detail: { quality, value: current }
     });
-  } else if (quality === 'OK' && previous && previous.quality !== 'OK') {
+  } else if (
+    quality === 'OK' &&
+    (errorState.active || previous?.quality === 'OUT_OF_RANGE')
+  ) {
     events.push({
       type: 'SENSOR_RECOVERED',
       severity: 'INFO',
-      detail: { previousQuality: previous.quality, quality, value: current }
+      detail: { previousQuality: previous?.quality ?? 'ERROR', quality, value: current }
     });
   }
 

@@ -15,7 +15,9 @@ const queryFilters = {
 
 export const lockerHistoryQuerySchema = z.object({
   ...queryFilters,
-  componentId: z.coerce.number().int().positive().optional()
+  componentId: z.coerce.number().int().positive().optional(),
+  type: z.string().trim().min(1).max(80).regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/).optional(),
+  page: z.coerce.number().int().min(1).max(1000000).default(1)
 }).refine(({ from, to }) => !from || !to || from <= to, {
   message: 'from must be earlier than or equal to to',
   path: ['to']

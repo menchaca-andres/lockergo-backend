@@ -9,6 +9,7 @@ export const ingestReadingsSchema = z.object({
     component: z.string().trim().min(1).max(100),
     value: readingValue,
     quality: z.enum(['OK', 'OUT_OF_RANGE', 'ERROR']).default('OK'),
+    purpose: z.enum(['PERIODIC', 'DOOR_CLOSE']).default('PERIODIC'),
     ts: z.number().finite().positive().optional()
   })).min(1).max(500)
 });

@@ -28,21 +28,27 @@ const initialComponentModels = [
     code: 'hc-sr04',
     name: 'HC-SR04',
     driver: 'hcsr04',
-    defaultConfig: { triggerPin: 25, echoPin: 19, intervalMs: 1000 }
+    defaultConfig: { triggerPin: 25, echoPin: 19, intervalMs: 1000, maxCm: 25 }
   },
   {
     typeCode: 'proximity',
     code: 'fc-51',
     name: 'FC-51',
     driver: 'fc51',
-    defaultConfig: { signalPin: 27, intervalMs: 250 }
+    defaultConfig: { signalPin: 27, intervalMs: 250, debounceSamples: 3, debounceDelayMs: 10 }
   },
   {
     typeCode: 'door_contact',
     code: 'mc-38',
     name: 'MC-38',
     driver: 'mc38',
-    defaultConfig: { signalPin: 33, pull: 'up', intervalMs: 100 }
+    defaultConfig: {
+      signalPin: 33,
+      pull: 'up',
+      intervalMs: 100,
+      debounceSamples: 3,
+      debounceDelayMs: 10
+    }
   }
 ] as const;
 

@@ -23,13 +23,30 @@ describe('deriveEvents', () => {
   });
 
   test('raises sensor quality events only on state changes', () => {
-    expect(deriveEvents(null, null, booleanValue(false), 'ERROR')[0]?.type).toBe('SENSOR_ERROR');
+    expect(deriveEvents(null, null, booleanValue(false), 'ERROR')).toEqual([]);
+    expect(deriveEvents(null, null, booleanValue(false), 'ERROR', {
+      consecutiveErrors: 3,
+      threshold: 3,
+      active: false
+    })).toEqual([{
+      type: 'SENSOR_ERROR',
+      severity: 'WARNING',
+      detail: { quality: 'ERROR', value: false, consecutiveErrors: 3 }
+    }]);
     expect(deriveEvents(null, {
       valueNum: 1, valueBool: null, valueText: null, payload: null, quality: 'ERROR'
-    }, booleanValue(false), 'ERROR')).toEqual([]);
+    }, booleanValue(false), 'ERROR', {
+      consecutiveErrors: 4,
+      threshold: 3,
+      active: true
+    })).toEqual([]);
     expect(deriveEvents(null, {
       valueNum: 1, valueBool: null, valueText: null, payload: null, quality: 'ERROR'
-    }, booleanValue(false), 'OK')[0]?.type).toBe('SENSOR_RECOVERED');
+    }, booleanValue(false), 'OK', {
+      consecutiveErrors: 0,
+      threshold: 3,
+      active: true
+    })[0]?.type).toBe('SENSOR_RECOVERED');
   });
 
   test('ignores malformed event rules', () => {

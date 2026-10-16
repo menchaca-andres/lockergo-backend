@@ -1,9 +1,17 @@
 import { env } from '../../config/env';
 import { prisma } from '../../lib/prisma';
+import type { Prisma } from '../../generated/prisma/client';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const LOCKER_INTERNAL_HEIGHT_CM = 20;
 
-export async function getAdminDashboardOverview() {
+function numberFromDetail(detail: Prisma.JsonValue, key: string): number | null {
+  if (detail === null || typeof detail !== 'object' || Array.isArray(detail)) return null;
+  const value = detail[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+export async function getAdminDashboardOverview(timezone = 'UTC') {
   const now = new Date();
   const today = new Date(now);
   today.setUTCHours(0, 0, 0, 0);
@@ -23,7 +31,8 @@ export async function getAdminDashboardOverview() {
     recentEvents,
     recentPackages,
     packageStatusCounts,
-    packageSizeCounts
+    packageSizeCounts,
+    packageMeasurementEvents
   ] = await Promise.all([
     prisma.device.findMany({
       where: { isActive: true },
@@ -56,8 +65,12 @@ export async function getAdminDashboardOverview() {
       where: { status: 'PENDING', depositedAt: { not: null } }
     }),
     prisma.$queryRaw<Array<{ dayOfWeek: number; hour: number; count: number }>>`
-      SELECT EXTRACT(DOW FROM e."createdAt")::int AS "dayOfWeek",
-        EXTRACT(HOUR FROM e."createdAt")::int AS hour,
+      SELECT EXTRACT(DOW FROM (
+          e."createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${timezone}
+        ))::int AS "dayOfWeek",
+        EXTRACT(HOUR FROM (
+          e."createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${timezone}
+        ))::int AS hour,
         COUNT(*)::int AS count
       FROM "Event" e
       WHERE e."type" = 'DOOR_OPENED'
@@ -134,6 +147,21 @@ export async function getAdminDashboardOverview() {
       by: ['estimatedSize'],
       _count: { _all: true },
       orderBy: { estimatedSize: 'asc' }
+    }),
+    prisma.event.findMany({
+      where: {
+        type: 'PACKAGE_DEPOSITED',
+        packageId: { not: null },
+        createdAt: { gte: activityFrom, lte: now }
+      },
+      orderBy: [{ createdAt: 'desc' }, { id_event: 'desc' }],
+      select: {
+        detail: true,
+        createdAt: true,
+        reading: { select: { valueNum: true } },
+        package: { select: { code: true } },
+        locker: { select: { code: true } }
+      }
     })
   ]);
 
@@ -180,7 +208,7 @@ export async function getAdminDashboardOverview() {
     activityRange: {
       from: activityFrom.toISOString(),
       to: now.toISOString(),
-      timezone: 'UTC'
+      timezone
     },
     kpis: {
       lockersOnline: onlineLockerIds.size,
@@ -199,6 +227,21 @@ export async function getAdminDashboardOverview() {
       size,
       count: packageSizeCounts.find((group) => group.estimatedSize === size)?._count._all ?? 0
     })),
+    packageMeasurements: packageMeasurementEvents.flatMap((event) => {
+      const estimatedHeightCm = numberFromDetail(event.detail, 'estimatedHeightCm');
+      if (
+        estimatedHeightCm === null ||
+        estimatedHeightCm < 0 ||
+        estimatedHeightCm > LOCKER_INTERNAL_HEIGHT_CM ||
+        event.package === null
+      ) return [];
+      return [{
+        packageCode: event.package.code,
+        lockerCode: event.locker.code,
+        estimatedHeightCm,
+        recordedAt: event.createdAt.toISOString()
+      }];
+    }),
     alerts,
     recentEvents: recentEvents.map((event) => ({ ...event, id_event: event.id_event.toString() })),
     recentPackages

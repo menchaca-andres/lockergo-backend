@@ -1,7 +1,9 @@
 import { Prisma } from '../../generated/prisma/client';
+import { env } from '../../config/env';
 import { prisma } from '../../lib/prisma';
 import { deriveEvents } from '../../services/eventEngine';
 import { normalizeReadingValue } from '../../services/valueNormalizer';
+import { flushDueDoorTransitions, recordDoorCandidate } from './door-debounce.service';
 import { publishLockerUpdate, type LockerUpdate } from '../lockers/locker-update-bus';
 import { applyPackageDoorClosedTransition, estimatePackageSize } from '../packages/packages.service';
 import { publishPackageUpdate, type PackageLiveUpdate } from '../packages/package-update-bus';
@@ -16,10 +18,40 @@ interface SensorState {
   recordedAt: Date;
 }
 
+interface PreviousReading {
+  id_reading: bigint;
+  valueNum: number | null;
+  valueBool: boolean | null;
+  valueText: string | null;
+  payload: Prisma.JsonValue | null;
+  quality: 'OK' | 'OUT_OF_RANGE' | 'ERROR';
+  receivedAt: Date;
+  recordedAt: Date;
+  purpose: 'PERIODIC' | 'DOOR_CLOSE';
+}
+
+function sameReading(
+  previous: PreviousReading,
+  normalized: NonNullable<ReturnType<typeof normalizeReadingValue>>,
+  quality: 'OK' | 'OUT_OF_RANGE' | 'ERROR',
+  purpose: 'PERIODIC' | 'DOOR_CLOSE'
+): boolean {
+  return previous.quality === quality &&
+    previous.purpose === purpose &&
+    previous.valueNum === normalized.valueNum &&
+    previous.valueBool === normalized.valueBool &&
+    previous.valueText === normalized.valueText &&
+    JSON.stringify(previous.payload) === JSON.stringify(normalized.payload);
+}
+
 export async function ingestReadings(
   deviceId: number,
   input: IngestReadingsInput
-): Promise<{ accepted: number; rejected: Array<{ component: string; reason: string }> } | null> {
+): Promise<{
+  accepted: number;
+  rejected: Array<{ component: string; reason: string }>;
+  discarded: Array<{ component: string; reason: string }>;
+} | null> {
   const result = await prisma.$transaction(async (transaction) => {
     const device = await transaction.device.findFirst({
       where: {
@@ -34,6 +66,7 @@ export async function ingestReadings(
 
     let accepted = 0;
     const rejected: Array<{ component: string; reason: string }> = [];
+    const discarded: Array<{ component: string; reason: string }> = [];
     const updates: Array<{ lockerId: number; update: LockerUpdate }> = [];
     const packageUpdates: Array<{ userId: number; update: PackageLiveUpdate }> = [];
     const sensorStateByType = new Map<string, SensorState>();
@@ -49,7 +82,7 @@ export async function ingestReadings(
         readings: {
           take: 1,
           orderBy: [{ recordedAt: 'desc' }, { receivedAt: 'desc' }, { id_reading: 'desc' }],
-          select: { valueNum: true, valueBool: true, quality: true, recordedAt: true }
+          select: { valueNum: true, valueBool: true, quality: true, purpose: true, recordedAt: true }
         }
       }
     });
@@ -66,13 +99,7 @@ export async function ingestReadings(
         });
       }
     }
-    const previousByComponent = new Map<number, {
-      valueNum: number | null;
-      valueBool: boolean | null;
-      valueText: string | null;
-      payload: Prisma.JsonValue | null;
-      quality: 'OK' | 'OUT_OF_RANGE' | 'ERROR';
-    } | null>();
+    const previousByComponent = new Map<number, PreviousReading | null>();
 
     for (const incoming of input.readings) {
       const component = await transaction.component.findFirst({
@@ -87,6 +114,13 @@ export async function ingestReadings(
           key: true,
           name: true,
           calibration: true,
+          consecutiveErrorCount: true,
+          sensorErrorActive: true,
+          stableBooleanValue: true,
+          pendingBooleanValue: true,
+          pendingBooleanAt: true,
+          pendingBooleanReadingId: true,
+          device: { select: { lockerId: true } },
           model: {
             select: {
               type: { select: { code: true, valueKind: true, eventRules: true } }
@@ -114,16 +148,28 @@ export async function ingestReadings(
 
       const now = new Date();
       const recordedAt = resolveRecordedAt(incoming.ts, now);
+      const typeCode = component.model.type.code;
+      if (incoming.purpose === 'DOOR_CLOSE' && typeCode !== 'distance') {
+        rejected.push({
+          component: incoming.component,
+          reason: 'DOOR_CLOSE purpose is only valid for a distance component'
+        });
+        continue;
+      }
 
       if (!previousByComponent.has(component.id_component)) {
         const previous = await transaction.reading.findFirst({
           where: { componentId: component.id_component },
           select: {
+            id_reading: true,
             valueNum: true,
             valueBool: true,
             valueText: true,
             payload: true,
-            quality: true
+            quality: true,
+            purpose: true,
+            receivedAt: true,
+            recordedAt: true
           },
           orderBy: [
             { recordedAt: 'desc' },
@@ -134,44 +180,90 @@ export async function ingestReadings(
         previousByComponent.set(component.id_component, previous);
       }
       const previous = previousByComponent.get(component.id_component) ?? null;
-      const reading = await transaction.reading.create({
-        data: {
-          componentId: component.id_component,
-          lockerId: device.lockerId,
-          ...normalized,
-          payload: normalized.payload === null
-            ? component.model.type.valueKind === 'JSON' ? Prisma.JsonNull : Prisma.DbNull
-            : normalized.payload,
-          quality: incoming.quality,
-          recordedAt
-        },
-        select: { id_reading: true, receivedAt: true }
-      });
-      previousByComponent.set(component.id_component, {
-        valueNum: normalized.valueNum,
-        valueBool: normalized.valueBool,
-        valueText: normalized.valueText,
-        payload: normalized.payload,
-        quality: incoming.quality
-      });
-      const typeCode = component.model.type.code;
-      if (typeCode === 'door_contact' || typeCode === 'proximity' || typeCode === 'distance') {
-        sensorStateByType.set(typeCode, {
+      const duplicate = previous !== null &&
+        env.READING_DEDUPE_WINDOW_SECONDS > 0 &&
+        now.getTime() - previous.receivedAt.getTime() <
+          env.READING_DEDUPE_WINDOW_SECONDS * 1000 &&
+        sameReading(previous, normalized, incoming.quality, incoming.purpose);
+      const reading = duplicate
+        ? {
+            id_reading: previous.id_reading,
+            receivedAt: previous.receivedAt,
+            recordedAt: previous.recordedAt
+          }
+        : await transaction.reading.create({
+            data: {
+              componentId: component.id_component,
+              lockerId: device.lockerId,
+              ...normalized,
+              payload: normalized.payload === null
+                ? component.model.type.valueKind === 'JSON' ? Prisma.JsonNull : Prisma.DbNull
+                : normalized.payload,
+              quality: incoming.quality,
+              purpose: incoming.purpose,
+              recordedAt
+            },
+            select: { id_reading: true, receivedAt: true, recordedAt: true }
+          });
+      if (duplicate) {
+        discarded.push({
+          component: incoming.component,
+          reason: `Identical reading received within ${env.READING_DEDUPE_WINDOW_SECONDS} seconds`
+        });
+      } else {
+        accepted += 1;
+        previousByComponent.set(component.id_component, {
+          id_reading: reading.id_reading,
           valueNum: normalized.valueNum,
           valueBool: normalized.valueBool,
+          valueText: normalized.valueText,
+          payload: normalized.payload,
           quality: incoming.quality,
-          calibration: component.calibration,
-          recordedAt
+          receivedAt: reading.receivedAt,
+          recordedAt: reading.recordedAt,
+          purpose: incoming.purpose
         });
       }
 
-      const emittedEvents: LockerUpdate['events'] = [];
-      for (const event of deriveEvents(
-        component.model.type.eventRules,
+      const consecutiveErrors = incoming.quality === 'ERROR'
+        ? component.consecutiveErrorCount + 1
+        : 0;
+      let sensorErrorActive = component.sensorErrorActive;
+      const qualityEvents = deriveEvents(
+        typeCode === 'door_contact' ? null : component.model.type.eventRules,
         previous,
         normalized,
-        incoming.quality
-      )) {
+        incoming.quality,
+        {
+          consecutiveErrors,
+          threshold: env.SENSOR_ERROR_THRESHOLD,
+          active: sensorErrorActive
+        }
+      );
+      if (qualityEvents.some(({ type }) => type === 'SENSOR_ERROR')) {
+        sensorErrorActive = true;
+      } else if (qualityEvents.some(({ type }) => type === 'SENSOR_RECOVERED')) {
+        sensorErrorActive = false;
+      }
+      await transaction.component.update({
+        where: { id_component: component.id_component },
+        data: { consecutiveErrorCount: consecutiveErrors, sensorErrorActive }
+      });
+
+      if (typeCode === 'door_contact' || typeCode === 'proximity' || typeCode === 'distance') {
+        if (!duplicate) {
+          sensorStateByType.set(typeCode, {
+            valueNum: normalized.valueNum,
+            valueBool: normalized.valueBool,
+            quality: incoming.quality,
+            calibration: component.calibration,
+            recordedAt
+          });
+        }
+      }
+
+      const emittedEvents: LockerUpdate['events'] = [];
+      for (const event of qualityEvents) {
         const createdEvent = await transaction.event.create({
           data: {
             lockerId: device.lockerId,
@@ -190,94 +282,122 @@ export async function ingestReadings(
           detail: createdEvent.detail,
           createdAt: createdEvent.createdAt.toISOString()
         });
-        if (
-          typeCode === 'door_contact' &&
-          event.type === 'DOOR_CLOSED' &&
-          incoming.quality === 'OK'
-        ) {
-          const presence = sensorStateByType.get('proximity');
-          if (presence?.quality === 'OK' && presence.valueBool !== null) {
-            const distance = sensorStateByType.get('distance');
-            const sizeEstimate = presence.valueBool && distance?.quality === 'OK'
-              ? estimatePackageSize(distance.valueNum, distance.calibration)
-              : null;
-            const transition = await applyPackageDoorClosedTransition(transaction, {
-              lockerId: device.lockerId,
-              hasPackage: presence.valueBool,
-              sizeEstimate
-            });
-            if (transition) {
-              const packageEventType = presence.valueBool ? 'PACKAGE_DEPOSITED' : 'PACKAGE_PICKED_UP';
-              const packageEvent = await transaction.event.create({
-                data: {
-                  lockerId: device.lockerId,
-                  packageId: transition.id_package,
-                  componentId: component.id_component,
-                  readingId: reading.id_reading,
-                  type: packageEventType,
-                  severity: 'INFO',
-                  detail: {
-                    packageCode: transition.code,
-                    status: transition.status,
-                    estimatedSize: transition.estimatedSize,
-                    depositedAt: transition.depositedAt?.toISOString() ?? null,
-                    pickedUpAt: transition.pickedUpAt?.toISOString() ?? null,
-                    estimatedHeightCm: sizeEstimate?.estimatedHeightCm ?? null,
-                    measuredDistanceCm: distance?.valueNum ?? null
-                  } satisfies Prisma.InputJsonObject
-                },
-                select: { id_event: true, type: true, severity: true, detail: true, createdAt: true }
-              });
-              emittedEvents.push({
-                id_event: packageEvent.id_event.toString(),
-                type: packageEvent.type,
-                severity: packageEvent.severity,
-                detail: packageEvent.detail,
-                createdAt: packageEvent.createdAt.toISOString(),
-                packageAudience: {
-                  clientId: transition.clientId,
-                  depositorId: transition.depositorId
-                }
-              });
-              const packageUpdate: PackageLiveUpdate = {
-                package: {
-                  id_package: transition.id_package,
-                  code: transition.code,
+      }
+
+      if (
+        !duplicate &&
+        typeCode === 'door_contact' &&
+        incoming.quality === 'OK' &&
+        normalized.valueBool !== null
+      ) {
+        const doorUpdate = await recordDoorCandidate(
+          transaction,
+          component,
+          reading.id_reading,
+          normalized.valueBool,
+          previous?.valueBool ?? null,
+          recordedAt
+        );
+        if (doorUpdate) updates.push(doorUpdate);
+      }
+      if (!duplicate && incoming.purpose === 'DOOR_CLOSE') {
+        updates.push(...await flushDueDoorTransitions(transaction, recordedAt, deviceId));
+        const lastDoorEvent = await transaction.event.findFirst({
+          where: {
+            lockerId: device.lockerId,
+            type: { in: ['DOOR_OPENED', 'DOOR_CLOSED'] },
+            component: { model: { type: { code: 'door_contact' } } }
+          },
+          orderBy: [{ createdAt: 'desc' }, { id_event: 'desc' }],
+          select: { type: true, reading: { select: { recordedAt: true } }, componentId: true }
+        });
+        const closeIsCurrent = lastDoorEvent?.type === 'DOOR_CLOSED' &&
+          lastDoorEvent.reading !== null &&
+          recordedAt.getTime() - lastDoorEvent.reading.recordedAt.getTime() <= 30000;
+        const presence = sensorStateByType.get('proximity');
+        if (closeIsCurrent && presence?.quality === 'OK' && presence.valueBool !== null) {
+          const sizeEstimate = presence.valueBool && incoming.quality === 'OK'
+            ? estimatePackageSize(normalized.valueNum, component.calibration)
+            : null;
+          const transition = await applyPackageDoorClosedTransition(transaction, {
+            lockerId: device.lockerId,
+            hasPackage: presence.valueBool,
+            sizeEstimate
+          });
+          if (transition) {
+            const packageEventType = presence.valueBool ? 'PACKAGE_DEPOSITED' : 'PACKAGE_PICKED_UP';
+            const packageEvent = await transaction.event.create({
+              data: {
+                lockerId: device.lockerId,
+                packageId: transition.id_package,
+                componentId: lastDoorEvent.componentId,
+                readingId: reading.id_reading,
+                type: packageEventType,
+                severity: 'INFO',
+                detail: {
+                  packageCode: transition.code,
                   status: transition.status,
                   estimatedSize: transition.estimatedSize,
                   depositedAt: transition.depositedAt?.toISOString() ?? null,
-                  pickedUpAt: transition.pickedUpAt?.toISOString() ?? null
-                },
-                event: {
-                  type: packageEventType,
-                  createdAt: packageEvent.createdAt.toISOString()
-                }
-              };
-              packageUpdates.push({ userId: transition.clientId, update: packageUpdate });
-              packageUpdates.push({ userId: transition.depositorId, update: packageUpdate });
-            }
+                  pickedUpAt: transition.pickedUpAt?.toISOString() ?? null,
+                  estimatedHeightCm: sizeEstimate?.estimatedHeightCm ?? null,
+                  measuredDistanceCm: normalized.valueNum
+                } satisfies Prisma.InputJsonObject
+              },
+              select: { id_event: true, type: true, severity: true, detail: true, createdAt: true }
+            });
+            emittedEvents.push({
+              id_event: packageEvent.id_event.toString(),
+              type: packageEvent.type,
+              severity: packageEvent.severity,
+              detail: packageEvent.detail,
+              createdAt: packageEvent.createdAt.toISOString(),
+              packageAudience: {
+                clientId: transition.clientId,
+                depositorId: transition.depositorId
+              }
+            });
+            const packageUpdate: PackageLiveUpdate = {
+              package: {
+                id_package: transition.id_package,
+                code: transition.code,
+                status: transition.status,
+                estimatedSize: transition.estimatedSize,
+                depositedAt: transition.depositedAt?.toISOString() ?? null,
+                pickedUpAt: transition.pickedUpAt?.toISOString() ?? null
+              },
+              event: {
+                type: packageEventType,
+                createdAt: packageEvent.createdAt.toISOString()
+              }
+            };
+            packageUpdates.push({ userId: transition.clientId, update: packageUpdate });
+            packageUpdates.push({ userId: transition.depositorId, update: packageUpdate });
           }
         }
       }
-      updates.push({
-        lockerId: device.lockerId,
-        update: {
-          reading: {
-            id_reading: reading.id_reading.toString(),
-            componentId: component.id_component,
-            valueNum: normalized.valueNum,
-            valueBool: normalized.valueBool,
-            valueText: normalized.valueText,
-            payload: normalized.payload,
-            quality: incoming.quality,
-            recordedAt: recordedAt.toISOString(),
-            receivedAt: reading.receivedAt.toISOString(),
-            component: { key: component.key, name: component.name }
-          },
-          events: emittedEvents
-        }
-      });
-      accepted += 1;
+
+      if (!duplicate || emittedEvents.length > 0) {
+        updates.push({
+          lockerId: device.lockerId,
+          update: {
+            reading: {
+              id_reading: reading.id_reading.toString(),
+              componentId: component.id_component,
+              valueNum: normalized.valueNum,
+              valueBool: normalized.valueBool,
+              valueText: normalized.valueText,
+              payload: normalized.payload,
+              quality: incoming.quality,
+              purpose: incoming.purpose,
+              recordedAt: reading.recordedAt.toISOString(),
+              receivedAt: reading.receivedAt.toISOString(),
+              component: { key: component.key, name: component.name }
+            },
+            events: emittedEvents
+          }
+        });
+      }
     }
 
     await transaction.device.update({
@@ -288,7 +408,7 @@ export async function ingestReadings(
       }
     });
 
-    return { accepted, rejected, updates, packageUpdates };
+    return { accepted, rejected, discarded, updates, packageUpdates };
   });
 
   if (!result) return null;
@@ -296,5 +416,9 @@ export async function ingestReadings(
   for (const update of result.packageUpdates) {
     publishPackageUpdate(update.userId, update.update);
   }
-  return { accepted: result.accepted, rejected: result.rejected };
+  return {
+    accepted: result.accepted,
+    rejected: result.rejected,
+    discarded: result.discarded
+  };
 }

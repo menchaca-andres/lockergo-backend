@@ -8,7 +8,13 @@ describe('ingestReadingsSchema', () => {
       readings: [{ component: 'door-1', value: false, ts: 1760000000 }]
     })).toEqual({
       deviceCode: 'esp32-locker-01',
-      readings: [{ component: 'door-1', value: false, quality: 'OK', ts: 1760000000 }]
+      readings: [{
+        component: 'door-1',
+        value: false,
+        quality: 'OK',
+        purpose: 'PERIODIC',
+        ts: 1760000000
+      }]
     });
   });
 

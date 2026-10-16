@@ -91,6 +91,8 @@ try {
     import('../src/app'),
     import('../src/lib/prisma')
   ]);
+  const { flushDueDoorTransitionsAndPublish } = await import('../src/modules/ingest/door-debounce.service');
+  const { aggregateAndDeleteExpiredReadings } = await import('../src/services/reading-retention');
   disconnectDatabase = () => prisma.$disconnect();
 
   server = app.listen(0, '127.0.0.1');
@@ -353,10 +355,12 @@ try {
   assert.deepEqual(configComponent['config'], {
     signalPin: 32,
     pull: 'up',
-    intervalMs: 100
+    intervalMs: 100,
+    debounceSamples: 3,
+    debounceDelayMs: 10
   }, 'Device config merges model defaults with instance config');
 
-  const nowSeconds = Date.now() / 1000;
+  const nowSeconds = Date.now() / 1000 - 30;
   const ingest = await request('/api/ingest/v1/readings', {
     method: 'POST',
     apiKey: apiKey as string,
@@ -364,18 +368,21 @@ try {
       deviceCode: device['code'],
       firmware: 'phase2-test',
       readings: [
-        { component: 'door-1', value: true, ts: nowSeconds },
-        { component: 'door-1', value: false, ts: nowSeconds + 1 },
-        { component: 'proximity-1', value: false, ts: nowSeconds + 1 },
+        { component: 'door-1', value: true, ts: nowSeconds - 3 },
+        { component: 'door-1', value: false, ts: nowSeconds - 2 },
+        { component: 'door-1', value: true, ts: nowSeconds - 1.9 },
+        { component: 'door-1', value: false, ts: nowSeconds - 1 },
+        { component: 'proximity-1', value: false, ts: nowSeconds - 2 },
         { component: 'missing-component', value: true },
         { component: 'door-1', value: 'not-a-boolean' },
-        { component: 'distance-1', value: null, quality: 'ERROR' }
+        { component: 'distance-1', value: null, quality: 'ERROR', ts: nowSeconds - 2 }
       ]
     }
   });
   assert.equal(ingest.response.status, 202);
   assert.deepEqual(ingest.data, {
-    accepted: 4,
+    accepted: 6,
+    discarded: [],
     rejected: [
       { component: 'missing-component', reason: 'Unknown or disabled component' },
       { component: 'door-1', reason: 'Value does not match BOOLEAN' }
@@ -387,10 +394,11 @@ try {
     orderBy: { id_reading: 'asc' },
     select: { valueBool: true, lockerId: true, quality: true }
   });
-  assert.equal(readings.length, 2, 'Both valid readings are persisted');
-  assert.deepEqual(readings.map((reading) => reading.valueBool), [true, false]);
+  assert.equal(readings.length, 4, 'Valid readings including short-lived bounce candidates are persisted');
+  assert.deepEqual(readings.map((reading) => reading.valueBool), [true, false, true, false]);
   assert.ok(readings.every((reading) => reading.lockerId === assignedLockerId));
 
+  await flushDueDoorTransitionsAndPublish();
   const events = await prisma.event.findMany({
     where: { lockerId: assignedLockerId, componentId: component['id_component'] as number },
     select: { type: true, severity: true, readingId: true }
@@ -398,14 +406,33 @@ try {
   assert.equal(events.length, 1, 'A state transition within one batch derives one event');
   assert.equal(events[0]?.type, 'DOOR_OPENED');
   assert.equal(events[0]?.severity, 'INFO');
+  const isolatedErrorEvents = await prisma.event.findMany({
+    where: { lockerId: assignedLockerId, componentId: distanceComponent['id_component'] as number },
+    select: { type: true, severity: true }
+  });
+  assert.deepEqual(isolatedErrorEvents, [], 'One isolated timeout does not create an alert');
+  const repeatedErrors = await request('/api/ingest/v1/readings', {
+    method: 'POST',
+    apiKey: apiKey as string,
+    body: {
+      deviceCode: device['code'],
+      readings: [
+        { component: 'distance-1', value: null, quality: 'ERROR' },
+        { component: 'distance-1', value: null, quality: 'ERROR' }
+      ]
+    }
+  });
+  assert.equal(repeatedErrors.response.status, 202);
+  assert.equal(repeatedErrors.data['accepted'], 0, 'Identical readings inside the dedupe window are not stored');
+  assert.equal((repeatedErrors.data['discarded'] as unknown[]).length, 2);
   const sensorErrorEvents = await prisma.event.findMany({
     where: { lockerId: assignedLockerId, componentId: distanceComponent['id_component'] as number },
     select: { type: true, severity: true }
   });
   assert.deepEqual(
     sensorErrorEvents.map(({ type, severity }) => ({ type, severity })),
-    [{ type: 'SENSOR_ERROR', severity: 'CRITICAL' }],
-    'A null reading marked ERROR persists and creates a sensor-error event'
+    [{ type: 'SENSOR_ERROR', severity: 'WARNING' }],
+    'Three consecutive timeouts create one warning despite duplicate-storage suppression'
   );
 
   const packageDeposit = await request('/api/ingest/v1/readings', {
@@ -416,7 +443,13 @@ try {
       readings: [
         { component: 'distance-1', value: 14, ts: nowSeconds + 3 },
         { component: 'proximity-1', value: true, ts: nowSeconds + 3 },
-        { component: 'door-1', value: true, ts: nowSeconds + 3 }
+        { component: 'door-1', value: true, ts: nowSeconds + 3 },
+        {
+          component: 'distance-1',
+          value: 14,
+          purpose: 'DOOR_CLOSE',
+          ts: nowSeconds + 5
+        }
       ]
     }
   });
@@ -435,15 +468,31 @@ try {
   });
   assert.deepEqual(depositEvents.map(({ type }) => type), ['PACKAGE_DEPOSITED']);
 
+  const pickupSeconds = Date.now() / 1000 - 3;
+  const packagePickupOpen = await request('/api/ingest/v1/readings', {
+    method: 'POST',
+    apiKey: apiKey as string,
+    body: {
+      deviceCode: device['code'],
+      readings: [{ component: 'door-1', value: false, ts: pickupSeconds }]
+    }
+  });
+  assert.equal(packagePickupOpen.response.status, 202);
+  await flushDueDoorTransitionsAndPublish();
   const packagePickup = await request('/api/ingest/v1/readings', {
     method: 'POST',
     apiKey: apiKey as string,
     body: {
       deviceCode: device['code'],
       readings: [
-        { component: 'door-1', value: false, ts: nowSeconds + 4 },
-        { component: 'proximity-1', value: false, ts: nowSeconds + 5 },
-        { component: 'door-1', value: true, ts: nowSeconds + 5 }
+        { component: 'proximity-1', value: false, ts: pickupSeconds + 1 },
+        { component: 'door-1', value: true, ts: pickupSeconds + 1 },
+        {
+          component: 'distance-1',
+          value: 18,
+          purpose: 'DOOR_CLOSE',
+          ts: pickupSeconds + 3
+        }
       ]
     }
   });
@@ -530,13 +579,25 @@ try {
   assert.equal(history.response.status, 200);
   assert.equal((history.data['readings'] as Array<Record<string, unknown>>).length, 10);
   const distanceHistory = await request(
-    `/api/lockers/${assignedLockerId}/readings?componentId=${distanceComponent['id_component']}`,
+    `/api/lockers/${assignedLockerId}/readings?componentId=${distanceComponent['id_component']}&page=1&limit=1`,
     { token: userToken }
   );
   assert.equal(distanceHistory.response.status, 200);
   const latestDistanceReading = (distanceHistory.data['readings'] as Array<Record<string, unknown>>)[0];
-  assert.equal(latestDistanceReading?.['valueNum'], 14);
+  assert.equal(latestDistanceReading?.['valueNum'], 18);
   assert.equal(latestDistanceReading?.['quality'], 'OK');
+  assert.equal(latestDistanceReading?.['purpose'], 'DOOR_CLOSE');
+  assert.equal((distanceHistory.data['pagination'] as Record<string, unknown>)['page'], 1);
+  assert.ok(Number((distanceHistory.data['pagination'] as Record<string, unknown>)['total']) >= 1);
+  const distanceTypeHistory = await request(
+    `/api/lockers/${assignedLockerId}/readings?type=distance&limit=1`,
+    { token: userToken }
+  );
+  assert.equal(
+    (distanceTypeHistory.data['readings'] as Array<Record<string, unknown>>)[0]?.['componentId'],
+    distanceComponent['id_component'],
+    'Reading history supports filtering by component type'
+  );
   const eventHistory = await request(
     `/api/lockers/${assignedLockerId}/events?type=DOOR_OPENED&severity=INFO`,
     { token: userToken }
@@ -544,7 +605,7 @@ try {
   assert.equal(eventHistory.response.status, 200);
   assert.equal((eventHistory.data['events'] as Array<Record<string, unknown>>)[0]?.['type'], 'DOOR_OPENED');
   const sensorErrorHistory = await request(
-    `/api/lockers/${assignedLockerId}/events?severity=CRITICAL`,
+    `/api/lockers/${assignedLockerId}/events?severity=WARNING`,
     { token: userToken }
   );
   assert.equal((sensorErrorHistory.data['events'] as Array<Record<string, unknown>>)[0]?.['type'], 'SENSOR_ERROR');
@@ -634,7 +695,7 @@ try {
     apiKey: apiKey as string,
     body: {
       deviceCode: device['code'],
-      readings: [{ component: 'door-1', value: true, ts: Date.now() / 1000 }]
+      readings: [{ component: 'proximity-1', value: true, ts: Date.now() / 1000 }]
     }
   });
   assert.equal(liveIngest.response.status, 202);
@@ -669,7 +730,38 @@ try {
     'Rotated device key grants access'
   );
 
-  console.info('Phase 2/3 verification passed: package lifecycle, role-filtered access, analytics, SSE, ingestion, and key rotation.');
+  const retentionAt = new Date('2020-01-02T10:45:00.000Z');
+  await prisma.reading.create({
+    data: {
+      componentId: distanceComponent['id_component'] as number,
+      lockerId: assignedLockerId,
+      valueNum: 8,
+      quality: 'OK',
+      recordedAt: retentionAt
+    }
+  });
+  const deletedReadings = await aggregateAndDeleteExpiredReadings(
+    new Date(retentionAt.getTime() + 31 * 24 * 60 * 60 * 1000)
+  );
+  assert.equal(deletedReadings, 1, 'Expired raw reading is deleted only after hourly aggregation');
+  const hourlyAggregate = await prisma.readingHourlyAggregate.findUnique({
+    where: {
+      componentId_hour: {
+        componentId: distanceComponent['id_component'] as number,
+        hour: new Date('2020-01-02T10:00:00.000Z')
+      }
+    },
+    select: { minimum: true, maximum: true, average: true, count: true, numericCount: true }
+  });
+  assert.deepEqual(hourlyAggregate, {
+    minimum: 8,
+    maximum: 8,
+    average: 8,
+    count: 1n,
+    numericCount: 1n
+  });
+
+  console.info('Phase 2/3 verification passed: sensor debounce, error filtering, retention, package lifecycle, pagination, SSE, and key rotation.');
 
   server.closeAllConnections();
   server = undefined;

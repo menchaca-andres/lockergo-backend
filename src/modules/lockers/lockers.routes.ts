@@ -72,7 +72,7 @@ lockersRouter.get('/:id/readings', async (req, res) => {
     res.status(404).json({ message: 'Locker not found' });
     return;
   }
-  res.json({ readings });
+  res.json(readings);
 });
 
 lockersRouter.get('/:id/events', async (req, res) => {

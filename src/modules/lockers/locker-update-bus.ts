@@ -9,6 +9,7 @@ export interface LockerUpdate {
     valueText: string | null;
     payload: unknown;
     quality: string;
+    purpose: string;
     recordedAt: string;
     receivedAt: string;
     component: { key: string; name: string };

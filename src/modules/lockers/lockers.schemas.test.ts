@@ -31,9 +31,16 @@ describe('locker schemas', () => {
   });
 
   test('validates bounded reading and event filters', () => {
-    expect(lockerHistoryQuerySchema.parse({ limit: '250', componentId: '3' })).toEqual({
+    expect(lockerHistoryQuerySchema.parse({
+      limit: '250',
+      componentId: '3',
+      type: 'distance',
+      page: '2'
+    })).toEqual({
       limit: 250,
-      componentId: 3
+      componentId: 3,
+      type: 'distance',
+      page: 2
     });
     expect(lockerEventsQuerySchema.parse({ severity: 'WARNING', limit: '25' })).toEqual({
       severity: 'WARNING',

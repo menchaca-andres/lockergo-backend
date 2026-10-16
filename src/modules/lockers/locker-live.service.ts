@@ -52,6 +52,7 @@ const readingSelect = {
   valueText: true,
   payload: true,
   quality: true,
+  purpose: true,
   recordedAt: true,
   receivedAt: true,
   component: {
@@ -143,15 +144,17 @@ export async function listLockerReadings(
     from?: Date;
     to?: Date;
     componentId?: number;
+    type?: string;
+    page: number;
     limit: number;
   }
 ) {
   if (!(await getLocker(user, lockerId))) return null;
 
-  const readings = await prisma.reading.findMany({
-    where: {
+  const where = {
       lockerId,
       ...(filters.componentId !== undefined ? { componentId: filters.componentId } : {}),
+      ...(filters.type ? { component: { model: { type: { code: filters.type } } } } : {}),
       ...(filters.from || filters.to
         ? {
             recordedAt: {
@@ -160,17 +163,31 @@ export async function listLockerReadings(
             }
           }
         : {})
-    },
-    orderBy: [
-      { recordedAt: 'desc' },
-      { receivedAt: 'desc' },
-      { id_reading: 'desc' }
-    ],
-    take: filters.limit,
-    select: readingSelect
-  });
+    } as const;
+  const [total, readings] = await Promise.all([
+    prisma.reading.count({ where }),
+    prisma.reading.findMany({
+      where,
+      orderBy: [
+        { recordedAt: 'desc' },
+        { receivedAt: 'desc' },
+        { id_reading: 'desc' }
+      ],
+      skip: (filters.page - 1) * filters.limit,
+      take: filters.limit,
+      select: readingSelect
+    })
+  ]);
 
-  return readings.map((reading) => ({ ...reading, id_reading: reading.id_reading.toString() }));
+  return {
+    readings: readings.map((reading) => ({ ...reading, id_reading: reading.id_reading.toString() })),
+    pagination: {
+      page: filters.page,
+      limit: filters.limit,
+      total,
+      totalPages: Math.ceil(total / filters.limit)
+    }
+  };
 }
 
 export async function listLockerEvents(

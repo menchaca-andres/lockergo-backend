@@ -13,6 +13,10 @@ export const envSchema = z
     CORS_ORIGIN: z.string().default('http://localhost:4200'),
     DEVICE_OFFLINE_SECONDS: z.coerce.number().default(120),
     DOOR_OPEN_ALERT_SECONDS: z.coerce.number().int().positive().default(300),
+    SENSOR_ERROR_THRESHOLD: z.coerce.number().int().min(1).default(3),
+    READING_DEDUPE_WINDOW_SECONDS: z.coerce.number().min(0).default(5),
+    READING_RETENTION_DAYS: z.coerce.number().int().min(1).default(30),
+    DOOR_DEBOUNCE_MS: z.coerce.number().int().min(1).default(500),
     ALLOW_UNAUTHENTICATED_DEVICE_ACCESS: z.enum(['true', 'false']).default('false').transform((value) => value === 'true')
   })
   .superRefine((config, context) => {
