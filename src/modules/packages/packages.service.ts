@@ -14,10 +14,29 @@ const packageSelect = {
   depositedAt: true,
   pickedUpAt: true,
   createdAt: true,
+  events: {
+    where: { type: 'PACKAGE_DEPOSITED' },
+    orderBy: [{ createdAt: 'desc' }, { id_event: 'desc' }],
+    take: 1,
+    select: { detail: true }
+  },
   locker: { select: { id_locker: true, code: true, name: true, location: true } },
   depositor: { select: { id_user: true, name: true } },
   client: { select: { id_user: true, name: true } }
-} as const;
+} satisfies Prisma.PackageSelect;
+
+function heightFromDetail(detail: Prisma.JsonValue): number | null {
+  if (detail === null || typeof detail !== 'object' || Array.isArray(detail)) return null;
+  const height = detail['estimatedHeightCm'];
+  return typeof height === 'number' && Number.isFinite(height) && height >= 0 && height <= 20
+    ? height
+    : null;
+}
+
+function withEstimatedHeight<T extends { events: Array<{ detail: Prisma.JsonValue }> }>(packageRecord: T) {
+  const { events, ...record } = packageRecord;
+  return { ...record, estimatedHeightCm: events[0] ? heightFromDetail(events[0].detail) : null };
+}
 
 export async function listPackages(user: PublicUser, filters: PackageListQuery) {
   const where: Prisma.PackageWhereInput = {
@@ -29,12 +48,13 @@ export async function listPackages(user: PublicUser, filters: PackageListQuery) 
     ...(filters.status ? { status: filters.status } : {})
   };
 
-  return prisma.package.findMany({
+  const packages = await prisma.package.findMany({
     where,
     select: packageSelect,
     orderBy: [{ createdAt: 'desc' }, { id_package: 'desc' }],
     take: filters.limit
   });
+  return packages.map(withEstimatedHeight);
 }
 
 export async function listPackageLockerOptions() {
@@ -58,7 +78,7 @@ export async function createPackage(input: CreatePackageInput, depositorId: numb
   ]);
   if (!locker || !client) return null;
 
-  return prisma.package.create({
+  const packageRecord = await prisma.package.create({
     data: {
       code: input.code,
       lockerId: locker.id_locker,
@@ -67,6 +87,7 @@ export async function createPackage(input: CreatePackageInput, depositorId: numb
     },
     select: packageSelect
   });
+  return withEstimatedHeight(packageRecord);
 }
 
 const LOCKER_INTERNAL_HEIGHT_CM = 20;
@@ -114,6 +135,7 @@ export interface PackageDoorTransition {
   depositorId: number;
   status: 'PENDING' | 'PICKED_UP';
   estimatedSize: PackageSize | null;
+  estimatedHeightCm: number | null;
   depositedAt: Date | null;
   pickedUpAt: Date | null;
 }
@@ -139,13 +161,19 @@ export async function applyPackageDoorClosedTransition(
       id_package: true,
       code: true,
       clientId: true,
-      depositorId: true
+      depositorId: true,
+      events: {
+        where: { type: 'PACKAGE_DEPOSITED' },
+        orderBy: [{ createdAt: 'desc' }, { id_event: 'desc' }],
+        take: 1,
+        select: { detail: true }
+      }
     }
   });
   if (!packageRecord) return null;
 
   const now = new Date();
-  return transaction.package.update({
+  const transition = await transaction.package.update({
     where: { id_package: packageRecord.id_package },
     data: input.hasPackage
       ? {
@@ -164,4 +192,10 @@ export async function applyPackageDoorClosedTransition(
       pickedUpAt: true
     }
   });
+  return {
+    ...transition,
+    estimatedHeightCm: input.hasPackage
+      ? input.sizeEstimate?.estimatedHeightCm ?? null
+      : packageRecord.events[0] ? heightFromDetail(packageRecord.events[0].detail) : null
+  };
 }

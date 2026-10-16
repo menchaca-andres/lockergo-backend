@@ -31,7 +31,6 @@ export async function getAdminDashboardOverview(timezone = 'UTC') {
     recentEvents,
     recentPackages,
     packageStatusCounts,
-    packageSizeCounts,
     packageMeasurementEvents
   ] = await Promise.all([
     prisma.device.findMany({
@@ -130,6 +129,12 @@ export async function getAdminDashboardOverview(timezone = 'UTC') {
         code: true,
         status: true,
         estimatedSize: true,
+        events: {
+          where: { type: 'PACKAGE_DEPOSITED' },
+          orderBy: [{ createdAt: 'desc' }, { id_event: 'desc' }],
+          take: 1,
+          select: { detail: true }
+        },
         createdAt: true,
         depositedAt: true,
         pickedUpAt: true,
@@ -142,11 +147,6 @@ export async function getAdminDashboardOverview(timezone = 'UTC') {
       by: ['status'],
       _count: { _all: true },
       orderBy: { status: 'asc' }
-    }),
-    prisma.package.groupBy({
-      by: ['estimatedSize'],
-      _count: { _all: true },
-      orderBy: { estimatedSize: 'asc' }
     }),
     prisma.event.findMany({
       where: {
@@ -223,10 +223,6 @@ export async function getAdminDashboardOverview(timezone = 'UTC') {
       status,
       count: _count._all
     })),
-    packageSizeDistribution: (['S', 'M', 'L', null] as const).map((size) => ({
-      size,
-      count: packageSizeCounts.find((group) => group.estimatedSize === size)?._count._all ?? 0
-    })),
     packageMeasurements: packageMeasurementEvents.flatMap((event) => {
       const estimatedHeightCm = numberFromDetail(event.detail, 'estimatedHeightCm');
       if (
@@ -244,6 +240,9 @@ export async function getAdminDashboardOverview(timezone = 'UTC') {
     }),
     alerts,
     recentEvents: recentEvents.map((event) => ({ ...event, id_event: event.id_event.toString() })),
-    recentPackages
+    recentPackages: recentPackages.map(({ events, ...packageRecord }) => ({
+      ...packageRecord,
+      estimatedHeightCm: events[0] ? numberFromDetail(events[0].detail, 'estimatedHeightCm') : null
+    }))
   };
 }

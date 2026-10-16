@@ -338,9 +338,9 @@ export async function ingestReadings(
                   packageCode: transition.code,
                   status: transition.status,
                   estimatedSize: transition.estimatedSize,
+                  estimatedHeightCm: transition.estimatedHeightCm,
                   depositedAt: transition.depositedAt?.toISOString() ?? null,
                   pickedUpAt: transition.pickedUpAt?.toISOString() ?? null,
-                  estimatedHeightCm: sizeEstimate?.estimatedHeightCm ?? null,
                   measuredDistanceCm: normalized.valueNum
                 } satisfies Prisma.InputJsonObject
               },
@@ -363,6 +363,7 @@ export async function ingestReadings(
                 code: transition.code,
                 status: transition.status,
                 estimatedSize: transition.estimatedSize,
+                estimatedHeightCm: transition.estimatedHeightCm,
                 depositedAt: transition.depositedAt?.toISOString() ?? null,
                 pickedUpAt: transition.pickedUpAt?.toISOString() ?? null
               },

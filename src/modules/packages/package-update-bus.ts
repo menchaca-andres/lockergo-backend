@@ -4,6 +4,7 @@ export interface PackageLiveUpdate {
     code: string;
     status: 'PENDING' | 'PICKED_UP';
     estimatedSize: 'S' | 'M' | 'L' | null;
+    estimatedHeightCm: number | null;
     depositedAt: string | null;
     pickedUpAt: string | null;
   };

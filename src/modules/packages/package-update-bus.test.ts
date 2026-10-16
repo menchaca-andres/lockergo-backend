@@ -7,6 +7,7 @@ const update = {
     code: 'pkg-31',
     status: 'PENDING' as const,
     estimatedSize: 'M' as const,
+    estimatedHeightCm: 10,
     depositedAt: '2026-10-15T12:00:00.000Z',
     pickedUpAt: null
   },

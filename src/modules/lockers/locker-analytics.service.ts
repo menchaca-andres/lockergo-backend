@@ -1,4 +1,5 @@
 import { prisma } from '../../lib/prisma';
+import type { Prisma } from '../../generated/prisma/client';
 
 interface AnalyticsRange {
   from?: Date;
@@ -11,6 +12,12 @@ function rangeFrom(filters: AnalyticsRange) {
   return { from, to };
 }
 
+function numberFromDetail(detail: Prisma.JsonValue, key: string): number | null {
+  if (detail === null || typeof detail !== 'object' || Array.isArray(detail)) return null;
+  const value = detail[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 export async function getLockerAnalytics(lockerId: number, filters: AnalyticsRange) {
   const locker = await prisma.locker.findUnique({
     where: { id_locker: lockerId },
@@ -19,7 +26,7 @@ export async function getLockerAnalytics(lockerId: number, filters: AnalyticsRan
   if (!locker) return null;
   const { from, to } = rangeFrom(filters);
 
-  const [doorByDay, activityHeatmap, infraredWithDoorClosed, sizeDistribution, distanceSensors] =
+  const [doorByDay, activityHeatmap, infraredWithDoorClosed, packageMeasurementEvents, distanceSensors] =
     await Promise.all([
       prisma.$queryRaw<Array<{ day: Date; type: string; count: number }>>`
         SELECT DATE_TRUNC('day', e."createdAt") AS day, e."type", COUNT(*)::int AS count
@@ -60,15 +67,19 @@ export async function getLockerAnalytics(lockerId: number, filters: AnalyticsRan
             LIMIT 1
           ) = 'DOOR_CLOSED'
       `,
-      prisma.package.groupBy({
-        by: ['estimatedSize'],
+      prisma.event.findMany({
         where: {
           lockerId,
-          depositedAt: { gte: from, lte: to },
-          estimatedSize: { not: null }
+          type: 'PACKAGE_DEPOSITED',
+          packageId: { not: null },
+          createdAt: { gte: from, lte: to }
         },
-        _count: { _all: true },
-        orderBy: { estimatedSize: 'asc' }
+        orderBy: [{ createdAt: 'desc' }, { id_event: 'desc' }],
+        select: {
+          detail: true,
+          createdAt: true,
+          package: { select: { code: true } }
+        }
       }),
       prisma.component.findMany({
         where: {
@@ -107,10 +118,20 @@ export async function getLockerAnalytics(lockerId: number, filters: AnalyticsRan
     doorByDay: [...doorByDaySummary.values()],
     activityHeatmap,
     infraredDetectionsWithDoorClosed: infraredWithDoorClosed[0]?.count ?? 0,
-    packageSizeDistribution: sizeDistribution.map(({ estimatedSize, _count }) => ({
-      size: estimatedSize,
-      count: _count._all
-    })),
+    packageMeasurements: packageMeasurementEvents.flatMap((event) => {
+      const estimatedHeightCm = numberFromDetail(event.detail, 'estimatedHeightCm');
+      if (
+        estimatedHeightCm === null ||
+        estimatedHeightCm < 0 ||
+        estimatedHeightCm > 20 ||
+        event.package === null
+      ) return [];
+      return [{
+        packageCode: event.package.code,
+        estimatedHeightCm,
+        recordedAt: event.createdAt.toISOString()
+      }];
+    }),
     liveDistance: distanceSensors.map((component) => {
       const reading = component.readings[0];
       const calibration = component.calibration;
