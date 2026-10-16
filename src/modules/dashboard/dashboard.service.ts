@@ -22,7 +22,8 @@ export async function getAdminDashboardOverview() {
     sensorErrors,
     recentEvents,
     recentPackages,
-    packageStatusCounts
+    packageStatusCounts,
+    packageSizeCounts
   ] = await Promise.all([
     prisma.device.findMany({
       where: { isActive: true },
@@ -128,6 +129,11 @@ export async function getAdminDashboardOverview() {
       by: ['status'],
       _count: { _all: true },
       orderBy: { status: 'asc' }
+    }),
+    prisma.package.groupBy({
+      by: ['estimatedSize'],
+      _count: { _all: true },
+      orderBy: { estimatedSize: 'asc' }
     })
   ]);
 
@@ -188,6 +194,10 @@ export async function getAdminDashboardOverview() {
     packagesByStatus: packageStatusCounts.map(({ status, _count }) => ({
       status,
       count: _count._all
+    })),
+    packageSizeDistribution: (['S', 'M', 'L', null] as const).map((size) => ({
+      size,
+      count: packageSizeCounts.find((group) => group.estimatedSize === size)?._count._all ?? 0
     })),
     alerts,
     recentEvents: recentEvents.map((event) => ({ ...event, id_event: event.id_event.toString() })),

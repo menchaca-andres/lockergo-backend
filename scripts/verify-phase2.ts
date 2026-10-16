@@ -475,6 +475,16 @@ try {
       .some((item) => item['status'] === 'PICKED_UP' && item['count'] === 1),
     'Global admin dashboard aggregates package counts by status'
   );
+  assert.ok(
+    (dashboardOverview.data['packageSizeDistribution'] as Array<Record<string, unknown>>)
+      .some((item) => item['size'] === 'S' && item['count'] === 1),
+    'Global admin dashboard aggregates packages with estimated sizes'
+  );
+  assert.ok(
+    (dashboardOverview.data['packageSizeDistribution'] as Array<Record<string, unknown>>)
+      .some((item) => item['size'] === null && item['count'] === 0),
+    'Global admin dashboard includes packages without a valid size estimate'
+  );
   const lockerAnalytics = await request(`/api/lockers/${assignedLockerId}/analytics`, {
     token: adminToken as string
   });
